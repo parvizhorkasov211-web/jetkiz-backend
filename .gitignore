@@ -1,6 +1,12 @@
-﻿api/node_modules/
-node_modules/
+﻿node_modules/
+dist/
 api/dist/
-api/*.tsbuildinfo
-api/coverage/
+api/node_modules/
+.env
 api/.env
+.env.*
+*.log
+coverage/
+.idea/
+.vscode/
+.DS_Store
