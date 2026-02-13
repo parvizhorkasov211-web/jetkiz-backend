@@ -1,0 +1,264 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  CLIENT
+  ADMIN
+  COURIER
+  RESTAURANT
+}
+
+model User {
+  id    String   @id @default(uuid())
+  phone String   @unique
+  role  UserRole @default(CLIENT)
+
+  // Auth OTP
+  otpCode      String?
+  otpExpiresAt DateTime?
+
+  // Profile
+  firstName String?
+  lastName  String?
+  email     String?
+  avatarUrl String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Opposite relations
+  reviews Review[]
+  orders  Order[]
+}
+
+enum RestaurantStatus {
+  OPEN
+  CLOSED
+}
+
+model Restaurant {
+  id   String @id @default(uuid())
+  slug String @unique
+
+  nameRu        String
+  nameKk        String
+  descriptionRu String?
+  descriptionKk String?
+
+  coverImageUrl String?
+
+  ratingAvg   Float @default(0)
+  ratingCount Int   @default(0)
+
+  status RestaurantStatus @default(OPEN)
+
+  // Управление показом на главной
+  isPinned  Boolean @default(false)
+  sortOrder Int     @default(0) // ручной порядок
+  useRandom Boolean @default(false) // можно включить рандом
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+  promos   Promo[]
+  reviews  Review[]
+  orders   Order[]
+
+  @@index([isPinned, sortOrder])
+  @@index([status])
+}
+
+model FoodCategory {
+  id   String @id @default(uuid())
+  code String @unique // sushi/pizza/doner...
+
+  titleRu String
+  titleKk String
+
+  iconUrl   String?
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+  promos   Promo[]
+
+  @@index([sortOrder])
+}
+
+model Product {
+  id           String  @id @default(uuid())
+  restaurantId String
+  categoryId   String?
+
+  titleRu       String
+  titleKk       String
+  descriptionRu String?
+  descriptionKk String?
+
+  price       Int
+  imageUrl    String?
+  isAvailable Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant    @relation(fields: [restaurantId], references: [id])
+  category   FoodCategory? @relation(fields: [categoryId], references: [id])
+
+  promos  Promo[]
+  reviews Review[]
+
+  // Opposite relations
+  orderItems OrderItem[]
+
+  @@index([restaurantId])
+  @@index([categoryId])
+  @@index([isAvailable])
+}
+
+enum PromoTargetType {
+  RESTAURANT
+  PRODUCT
+  CATEGORY
+}
+
+model Promo {
+  id String @id @default(uuid())
+
+  // картинка баннера
+  imageUrl String
+
+  // подпись на баннере (опционально)
+  titleRu String?
+  titleKk String?
+
+  // куда ведет баннер
+  targetType PromoTargetType
+
+  // один из этих id должен быть заполнен в зависимости от targetType
+  restaurantId String?
+  productId    String?
+  categoryId   String?
+
+  isActive Boolean   @default(true)
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  sortOrder Int @default(0)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant?   @relation(fields: [restaurantId], references: [id])
+  product    Product?      @relation(fields: [productId], references: [id])
+  category   FoodCategory? @relation(fields: [categoryId], references: [id])
+
+  @@index([isActive, sortOrder])
+  @@index([targetType])
+  @@index([restaurantId])
+  @@index([productId])
+  @@index([categoryId])
+}
+
+model Review {
+  id String @id @default(uuid())
+
+  userId       String
+  restaurantId String
+  productId    String?
+
+  rating Int // 1..5
+  text   String?
+
+  createdAt DateTime @default(now())
+
+  user       User       @relation(fields: [userId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+  product    Product?   @relation(fields: [productId], references: [id])
+
+  @@index([restaurantId])
+  @@index([productId])
+  @@index([userId])
+}
+
+enum OrderStatus {
+  CREATED
+  PAID
+  ACCEPTED
+  COOKING
+  READY
+  ON_THE_WAY
+  DELIVERED
+  CANCELED
+}
+
+enum PaymentMethod {
+  CARD
+  CASH
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+model Order {
+  id           String @id @default(uuid())
+  userId       String
+  restaurantId String
+
+  status OrderStatus @default(CREATED)
+
+  subtotal    Int
+  deliveryFee Int
+  total       Int
+
+  addressId   String
+  phone       String
+  comment     String?
+  leaveAtDoor Boolean @default(false)
+
+  paymentMethod PaymentMethod
+  paymentStatus PaymentStatus @default(PENDING)
+
+  ratingGiven Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user       User       @relation(fields: [userId], references: [id])
+  restaurant Restaurant @relation(fields: [restaurantId], references: [id])
+
+  items OrderItem[]
+
+  @@index([userId])
+  @@index([restaurantId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+model OrderItem {
+  id        String @id @default(uuid())
+  orderId   String
+  productId String
+
+  title    String
+  price    Int
+  quantity Int
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id])
+
+  @@index([orderId])
+  @@index([productId])
+}

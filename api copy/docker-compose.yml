@@ -1,0 +1,17 @@
+version: "3.9"
+services:
+  db:
+    image: postgres:16
+    container_name: jetkiz_postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: jetkiz
+      POSTGRES_USER: jetkiz
+      POSTGRES_PASSWORD: jetkiz_password
+    volumes:
+      - jetkiz_pgdata:/var/lib/postgresql/data
+
+volumes:
+  jetkiz_pgdata:
