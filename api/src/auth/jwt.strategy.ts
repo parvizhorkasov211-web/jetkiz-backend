@@ -24,16 +24,19 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
         id: true,
         phone: true,
         role: true,
+        isActive: true,
+        courierProfile: { select: { userId: true } },
       },
     });
 
-    if (!user) throw new UnauthorizedException('Unauthorized');
+    if (!user || user.isActive === false) throw new UnauthorizedException('Unauthorized');
 
     return {
       id: user.id,
       phone: user.phone,
       role: user.role,
-      restaurantId: null, // временно без привязки
+      restaurantId: null, // пока без привязки ресторанов
+      courierId: user.courierProfile?.userId ?? null,
     };
   }
 }

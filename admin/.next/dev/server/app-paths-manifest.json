@@ -1,0 +1,4 @@
+{
+  "/(layouts)/layout-20/orders/page": "app/(layouts)/layout-20/orders/page.js",
+  "/(layouts)/layout-20/couriers/page": "app/(layouts)/layout-20/couriers/page.js"
+}

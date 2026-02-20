@@ -10,3 +10,11 @@ coverage/
 .idea/
 .vscode/
 .DS_Store
+
+api/.env
+admin/.env.local
+*.bak
+.env
+.env.*
+!.env.example
+

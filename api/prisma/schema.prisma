@@ -18,9 +18,13 @@ model User {
   phone String   @unique
   role  UserRole @default(CLIENT)
 
-  // Auth OTP
+  // Auth OTP (для клиентов)
   otpCode      String?
   otpExpiresAt DateTime?
+
+  // Auth password (для курьеров/админа)
+  passwordHash String?
+  isActive     Boolean @default(true)
 
   // Profile
   firstName String?
@@ -34,6 +38,11 @@ model User {
   // Opposite relations
   reviews Review[]
   orders  Order[]
+
+  // Courier relations
+  courierProfile       CourierProfile?
+  courierNotesAuthored CourierNote[]   @relation("CourierNoteAuthor")
+  courierReviews       CourierReview[]
 }
 
 enum RestaurantStatus {
@@ -59,8 +68,8 @@ model Restaurant {
 
   // Управление показом на главной
   isPinned  Boolean @default(false)
-  sortOrder Int     @default(0) // ручной порядок
-  useRandom Boolean @default(false) // можно включить рандом
+  sortOrder Int     @default(0)
+  useRandom Boolean @default(false)
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -76,7 +85,7 @@ model Restaurant {
 
 model FoodCategory {
   id   String @id @default(uuid())
-  code String @unique // sushi/pizza/doner...
+  code String @unique
 
   titleRu String
   titleKk String
@@ -116,7 +125,6 @@ model Product {
   promos  Promo[]
   reviews Review[]
 
-  // Opposite relations
   orderItems OrderItem[]
 
   @@index([restaurantId])
@@ -133,17 +141,12 @@ enum PromoTargetType {
 model Promo {
   id String @id @default(uuid())
 
-  // картинка баннера
   imageUrl String
+  titleRu  String?
+  titleKk  String?
 
-  // подпись на баннере (опционально)
-  titleRu String?
-  titleKk String?
-
-  // куда ведет баннер
   targetType PromoTargetType
 
-  // один из этих id должен быть заполнен в зависимости от targetType
   restaurantId String?
   productId    String?
   categoryId   String?
@@ -175,7 +178,9 @@ model Review {
   restaurantId String
   productId    String?
 
-  rating Int // 1..5
+  orderId String? @unique
+
+  rating Int
   text   String?
 
   createdAt DateTime @default(now())
@@ -184,9 +189,12 @@ model Review {
   restaurant Restaurant @relation(fields: [restaurantId], references: [id])
   product    Product?   @relation(fields: [productId], references: [id])
 
+  order Order? @relation(fields: [orderId], references: [id])
+
   @@index([restaurantId])
   @@index([productId])
   @@index([userId])
+  @@index([orderId])
 }
 
 enum OrderStatus {
@@ -233,18 +241,34 @@ model Order {
 
   ratingGiven Boolean @default(false)
 
+  // Courier assignment
+  courierId   String?
+  courierFee  Int    @default(0)
+  assignedAt  DateTime?
+  pickedUpAt  DateTime?
+  deliveredAt DateTime?
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   user       User       @relation(fields: [userId], references: [id])
   restaurant Restaurant @relation(fields: [restaurantId], references: [id])
 
-  items OrderItem[]
+  courier CourierProfile? @relation(fields: [courierId], references: [userId])
+
+  items  OrderItem[]
+  review Review?
+
+  // ✅ opposite side for CourierReview.order
+  courierReview CourierReview? @relation("OrderCourierReview")
 
   @@index([userId])
   @@index([restaurantId])
   @@index([status])
   @@index([createdAt])
+
+  @@index([courierId])
+  @@index([assignedAt])
 }
 
 model OrderItem {
@@ -261,4 +285,112 @@ model OrderItem {
 
   @@index([orderId])
   @@index([productId])
+}
+
+/* =========================
+   COURIERS
+========================= */
+
+model CourierProfile {
+  userId String @id
+
+  firstName String
+  lastName  String
+  iin       String
+
+  // индивидуальный коэффициент (персональный), если null — берём глобальный тариф
+  personalFeeOverride Int?
+
+  // контроль активности
+  isOnline       Boolean  @default(false)
+  lastSeenAt     DateTime?
+  lastActiveAt   DateTime?
+  lastAssignedAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  orders Order[]
+
+  notes   CourierNote[]
+  reviews CourierReview[]
+
+  onlineEvents CourierOnlineEvent[]
+
+  @@index([iin])
+  @@index([isOnline])
+}
+
+model CourierTariff {
+  id String @id @default(uuid())
+
+  fee Int
+
+  isActive Boolean @default(true)
+
+  // планирование: можно заранее создать тариф с датой начала
+  startsAt DateTime?
+  endsAt   DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([isActive, startsAt])
+  @@index([createdAt])
+  @@index([endsAt])
+}
+
+model CourierNote {
+  id String @id @default(uuid())
+
+  courierUserId String
+  authorUserId  String?
+
+  text String
+
+  createdAt DateTime @default(now())
+
+  courier CourierProfile @relation(fields: [courierUserId], references: [userId], onDelete: Cascade)
+  author  User?          @relation("CourierNoteAuthor", fields: [authorUserId], references: [id], onDelete: SetNull)
+
+  @@index([courierUserId])
+  @@index([authorUserId])
+  @@index([createdAt])
+}
+
+model CourierReview {
+  id String @id @default(uuid())
+
+  courierUserId String
+  userId        String
+
+  orderId String? @unique
+
+  rating Int
+  text   String?
+
+  createdAt DateTime @default(now())
+
+  courier CourierProfile @relation(fields: [courierUserId], references: [userId], onDelete: Cascade)
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // ✅ named relation + opposite side exists in Order
+  order Order? @relation("OrderCourierReview", fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([courierUserId])
+  @@index([userId])
+  @@index([createdAt])
+}
+
+model CourierOnlineEvent {
+  id            String   @id @default(uuid())
+  courierUserId String
+  isOnline      Boolean
+  at            DateTime @default(now())
+
+  courier CourierProfile @relation(fields: [courierUserId], references: [userId], onDelete: Cascade)
+
+  @@index([courierUserId, at])
+  @@index([at])
 }

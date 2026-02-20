@@ -1,58 +1,115 @@
 import {
-  Body,
   Controller,
   Get,
-  Param,
-  Patch,
   Post,
+  Patch,
+  Param,
+  Body,
   Query,
-  Req,
   UseGuards,
+  ForbiddenException,
 } from '@nestjs/common';
-import { JwtAuthGuard } from '../auth/jwt.guard';
-import { CreateOrderDto } from './dto/create-order.dto';
-import { UpdateOrderStatusDto } from './dto/update-order-status.dto';
 import { OrdersService } from './orders.service';
+import { CreateOrderDto } from './dto/create-order.dto';
+import { JwtAuthGuard } from '../auth/jwt.guard';
+import { CurrentUser } from '../auth/current-user.decorator';
+import { OrderStatus } from '@prisma/client';
 
-@UseGuards(JwtAuthGuard)
+type JwtUser = {
+  id: string;
+  role?: 'CLIENT' | 'ADMIN' | 'COURIER' | 'RESTAURANT';
+  restaurantId?: string;
+  courierId?: string | null;
+};
+
+function toInt(v: any, def: number) {
+  const n = Number(v);
+  return Number.isFinite(n) && n > 0 ? n : def;
+}
+
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly ordersService: OrdersService) {}
+  constructor(private readonly orders: OrdersService) {}
 
-  // POST /orders
+  @UseGuards(JwtAuthGuard)
   @Post()
-  create(@Req() req: any, @Body() dto: CreateOrderDto) {
-    return this.ordersService.createOrder(req.user.id, dto);
+  create(@CurrentUser() user: JwtUser, @Body() dto: CreateOrderDto) {
+    return this.orders.createOrder(user.id, dto);
   }
 
-  // GET /orders/my?page=1&limit=20
+  @UseGuards(JwtAuthGuard)
+  @Get()
+  async list(
+    @CurrentUser() user: JwtUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('q') q?: string,
+    @Query('status') status?: OrderStatus,
+  ) {
+    const role = user.role ?? 'CLIENT';
+    const opts = { page: toInt(page, 1), limit: toInt(limit, 20) };
+
+    if (role === 'CLIENT') {
+      return this.orders.getMyOrders(user.id, opts);
+    }
+
+    if (role === 'ADMIN') {
+      return this.orders.getAdminOrders({ ...opts, q, status });
+    }
+
+    throw new ForbiddenException('Forbidden');
+  }
+
+  @UseGuards(JwtAuthGuard)
   @Get('my')
-  async my(@Req() req: any, @Query('page') page?: string, @Query('limit') limit?: string) {
-    const p = Math.max(1, Number(page ?? 1) || 1);
-    const l = Math.min(50, Math.max(1, Number(limit ?? 20) || 20));
-
-    const { items, total } = await this.ordersService.getMyOrders(req.user.id, { page: p, limit: l });
-
-    return {
-      data: items,
-      meta: {
-        page: p,
-        limit: l,
-        total,
-        pages: Math.max(1, Math.ceil(total / l)),
-      },
-    };
+  my(
+    @CurrentUser() user: JwtUser,
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.orders.getMyOrders(user.id, {
+      page: toInt(page, 1),
+      limit: toInt(limit, 20),
+    });
   }
 
-  // GET /orders/:id
+  @UseGuards(JwtAuthGuard)
   @Get(':id')
-  getOne(@Req() req: any, @Param('id') id: string) {
-    return this.ordersService.getOrderById(req.user.id, id);
+  async getOne(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    const role = user.role ?? 'CLIENT';
+    if (role === 'ADMIN') return this.orders.getAdminOrderById(id);
+    return this.orders.getOrderById(user.id, id);
   }
 
-  // PATCH /orders/:id/status  (ADMIN/RESTAURANT; CLIENT запрещён)
+  @UseGuards(JwtAuthGuard)
   @Patch(':id/status')
-  updateStatus(@Req() req: any, @Param('id') id: string, @Body() dto: UpdateOrderStatusDto) {
-    return this.ordersService.updateOrderStatus(req.user, id, dto.status);
+  updateStatus(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body('status') status: OrderStatus,
+  ) {
+    return this.orders.updateOrderStatus(user, id, status);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/assign-courier')
+  assignCourier(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body('courierUserId') courierUserId: string,
+  ) {
+    return this.orders.assignCourier(user, id, courierUserId);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/unassign-courier')
+  unassignCourier(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    return this.orders.unassignCourier(user, id);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/auto-assign')
+  autoAssign(@CurrentUser() user: JwtUser, @Param('id') id: string) {
+    return this.orders.autoAssignCourier(user, id);
   }
 }
