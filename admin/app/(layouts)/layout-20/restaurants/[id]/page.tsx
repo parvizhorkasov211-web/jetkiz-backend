@@ -3,13 +3,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useRouter } from 'next/navigation';
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+const API_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001';
 
 type Suggestion = { type: 'warning' | 'info' | 'success'; title: string; text: string };
 
 type Metrics = {
   restaurant?: {
     id: string;
+    number: number;
     slug: string;
     nameRu: string;
     nameKk: string;
@@ -114,15 +115,15 @@ function statusBadge(status: string) {
 }
 
 function levelColor(t: number) {
-  if (t <= 0.33) return 'rgba(220, 38, 38, 0.95)'; // красный
-  if (t <= 0.66) return 'rgba(245, 158, 11, 0.95)'; // желтый
-  return 'rgba(34, 197, 94, 0.95)'; // зеленый
+  if (t <= 0.33) return 'rgba(220, 38, 38, 0.95)';
+  if (t <= 0.66) return 'rgba(245, 158, 11, 0.95)';
+  return 'rgba(34, 197, 94, 0.95)';
 }
 
 /**
- * ✅ Определяем активный пресет по from/to:
- * - активен только если to = сегодня
- * - и from = сегодня - 7/30/90
+ * preset active if:
+ * - to = today
+ * - from = today - {7|30|90}
  */
 function detectPreset(from: string, to: string): 7 | 30 | 90 | null {
   if (!from || !to) return null;
@@ -142,11 +143,98 @@ function detectPreset(from: string, to: string): 7 | 30 | 90 | null {
   return null;
 }
 
+/** ====== UI Primitives ====== */
+
+function Panel({
+  title,
+  subtitle,
+  right,
+  children,
+  className = '',
+  tone = 'default',
+}: {
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  className?: string;
+  tone?: 'default' | 'muted';
+}) {
+  const shell = tone === 'muted' ? 'bg-slate-100/80 border-slate-200' : 'bg-white border-slate-200';
+  const body = tone === 'muted' ? 'bg-white/70' : 'bg-white';
+
+  return (
+    <div className={`rounded-2xl border shadow-sm ${shell} ${className}`}>
+      <div className="px-4 py-4 border-b border-slate-200/70 flex items-start justify-between gap-4">
+        <div>
+          <div className="font-semibold text-2xl leading-tight">{title}</div>
+          {subtitle ? <div className="text-base opacity-70 mt-2">{subtitle}</div> : null}
+        </div>
+        {right ? <div className="shrink-0 text-base">{right}</div> : null}
+      </div>
+
+      <div className={`p-5 rounded-b-2xl ${body}`}>{children}</div>
+    </div>
+  );
+}
+
+type StatTheme = 'green' | 'blue' | 'purple' | 'orange' | 'red' | 'teal' | 'gray';
+
+function themeToBg(theme: StatTheme) {
+  switch (theme) {
+    case 'green':
+      return 'bg-gradient-to-br from-emerald-500 to-emerald-700';
+    case 'blue':
+      return 'bg-gradient-to-br from-sky-500 to-indigo-700';
+    case 'purple':
+      return 'bg-gradient-to-br from-fuchsia-500 to-purple-700';
+    case 'orange':
+      return 'bg-gradient-to-br from-orange-400 to-rose-600';
+    case 'red':
+      return 'bg-gradient-to-br from-red-500 to-rose-700';
+    case 'teal':
+      return 'bg-gradient-to-br from-teal-500 to-cyan-700';
+    default:
+      return 'bg-gradient-to-br from-slate-500 to-slate-700';
+  }
+}
+
+function StatCard({
+  title,
+  value,
+  hint,
+  theme = 'blue',
+  icon,
+  right,
+}: {
+  title: string;
+  value: React.ReactNode;
+  hint?: React.ReactNode;
+  theme?: StatTheme;
+  icon?: React.ReactNode;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div className={`rounded-2xl p-5 text-white shadow-sm border border-white/15 ${themeToBg(theme)}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center">
+            <span className="text-2xl">{icon ?? '●'}</span>
+          </div>
+          <div className="text-lg opacity-95 font-semibold">{title}</div>
+        </div>
+        {right ? <div className="text-base opacity-95">{right}</div> : null}
+      </div>
+
+      <div className="mt-4 text-4xl font-extrabold leading-tight">{value}</div>
+
+      {hint ? <div className="mt-3 text-base opacity-95">{hint}</div> : null}
+    </div>
+  );
+}
+
 /**
- * ✅ Улучшенный график:
- * - Tooltip у мышки с датой + значением
- * - Подсветка точки
- * - Нормальная зона наведения по всему графику
+ * Chart (tooltip)
  */
 function NiceLineChart({
   title,
@@ -154,7 +242,7 @@ function NiceLineChart({
   data,
   valueKey,
   valueSuffix,
-  height = 180,
+  height = 210,
   formatValue,
 }: {
   title: string;
@@ -167,9 +255,9 @@ function NiceLineChart({
 }) {
   const width = 980;
   const padL = 14;
-  const padR = 52; // справа цифры
+  const padR = 52;
   const padT = 14;
-  const padB = 28; // снизу даты
+  const padB = 32;
 
   const wrapRef = useRef<HTMLDivElement | null>(null);
 
@@ -210,7 +298,6 @@ function NiceLineChart({
   };
 
   const dateToText = (ymd: string) => {
-    // ymd "YYYY-MM-DD"
     try {
       const [Y, M, D] = ymd.split('-').map(Number);
       if (!Y || !M || !D) return ymd;
@@ -231,7 +318,6 @@ function NiceLineChart({
     const scrollLeft = wrapRef.current.scrollLeft || 0;
     const mxSvg = mx + scrollLeft;
 
-    // ищем ближайшую точку по X
     let best = 0;
     let bestDist = Infinity;
     for (let i = 0; i < points.length; i++) {
@@ -263,57 +349,52 @@ function NiceLineChart({
       : null;
 
   return (
-    <div className="rounded-xl border p-4 bg-white">
-      <div className="flex items-start justify-between gap-3 mb-2">
-        <div>
-          <div className="font-semibold">{title}</div>
-          {subtitle ? <div className="text-xs opacity-70 mt-1">{subtitle}</div> : null}
+    <div>
+      {title ? (
+        <div className="flex items-start justify-between gap-4 mb-4">
+          <div>
+            <div className="font-semibold text-2xl">{title}</div>
+            {subtitle ? <div className="text-base opacity-70 mt-2">{subtitle}</div> : null}
+          </div>
+          <div className="text-lg opacity-70">
+            Последнее: <span className="text-black font-semibold">{valueToText(last)}</span>
+          </div>
         </div>
-        <div className="text-sm opacity-70">
-          Последнее:{' '}
-          <span className="text-black font-semibold">{valueToText(last)}</span>
-        </div>
-      </div>
+      ) : null}
 
-      {/* ✅ Обёртка для tooltip (position: relative) */}
       <div
         ref={wrapRef}
-        className="overflow-auto"
+        className="overflow-auto rounded-2xl border border-slate-200 bg-white"
         style={{ position: 'relative' }}
         onMouseMove={onMove}
         onMouseLeave={onLeave}
       >
         <svg width={width} height={height} className="block">
-          {/* grid */}
           {ticks.map((t, idx) => (
             <g key={idx}>
               <line x1={padL} y1={t.y} x2={width - padR} y2={t.y} stroke="rgba(0,0,0,0.08)" />
-              <text x={width - padR + 8} y={t.y + 4} fontSize="11" fill="rgba(0,0,0,0.55)">
+              <text x={width - padR + 8} y={t.y + 5} fontSize="14" fill="rgba(0,0,0,0.55)">
                 {t.v.toLocaleString('ru-RU')}
               </text>
             </g>
           ))}
 
-          {/* axis */}
           <line x1={padL} y1={padT} x2={padL} y2={height - padB} stroke="rgba(0,0,0,0.12)" />
           <line x1={padL} y1={height - padB} x2={width - padR} y2={height - padB} stroke="rgba(0,0,0,0.12)" />
 
-          {/* line */}
-          <path d={path} fill="none" stroke="rgba(0,0,0,0.75)" strokeWidth="2.2" />
+          <path d={path} fill="none" stroke="rgba(15, 23, 42, 0.85)" strokeWidth="2.6" />
 
-          {/* points */}
           {points.map((p) => (
             <circle
               key={p.i}
               cx={p.x}
               cy={p.y}
-              r={hoverIdx === p.i ? 5.2 : 3.2}
+              r={hoverIdx === p.i ? 5.6 : 3.6}
               fill={levelColor(p.t)}
               stroke="rgba(0,0,0,0.12)"
             />
           ))}
 
-          {/* hover crosshair */}
           {hoverPoint ? (
             <g>
               <line
@@ -335,52 +416,83 @@ function NiceLineChart({
             </g>
           ) : null}
 
-          {/* x labels */}
           {(data || []).map((d, i) => {
             if (i % xLabelEvery !== 0 && i !== data.length - 1) return null;
             const x = padL + (i * plotW) / Math.max(1, values.length - 1);
-            const label = String(d.date || '').slice(5); // MM-DD
+            const label = String(d.date || '').slice(5);
             return (
-              <text key={i} x={x} y={height - 8} fontSize="11" fill="rgba(0,0,0,0.55)" textAnchor="middle">
+              <text key={i} x={x} y={height - 8} fontSize="14" fill="rgba(0,0,0,0.55)" textAnchor="middle">
                 {label}
               </text>
             );
           })}
         </svg>
 
-        {/* ✅ Tooltip */}
         {tooltipText && tip ? (
           <div
             style={{
               position: 'absolute',
-              left: Math.min(tip.x + 12, 860),
-              top: Math.max(8, tip.y - 44),
+              left: Math.min(tip.x + 12, 820),
+              top: Math.max(8, tip.y - 56),
               pointerEvents: 'none',
-              background: 'rgba(0,0,0,0.85)',
+              background: 'rgba(2,6,23,0.88)',
               color: 'white',
-              padding: '8px 10px',
-              borderRadius: 10,
-              fontSize: 12,
-              boxShadow: '0 8px 28px rgba(0,0,0,0.25)',
-              maxWidth: 260,
+              padding: '12px 14px',
+              borderRadius: 14,
+              fontSize: 14,
+              boxShadow: '0 10px 30px rgba(0,0,0,0.25)',
+              maxWidth: 320,
               zIndex: 5,
             }}
           >
-            <div style={{ fontWeight: 700, marginBottom: 2 }}>{tooltipText.date}</div>
-            <div style={{ opacity: 0.9 }}>
+            <div style={{ fontWeight: 900, marginBottom: 4 }}>{tooltipText.date}</div>
+            <div style={{ opacity: 0.98 }}>
               {valueKey === 'orders' ? 'Заказы: ' : valueKey === 'revenue' ? 'Сумма: ' : 'Значение: '}
-              <span style={{ fontWeight: 700 }}>{tooltipText.value}</span>
+              <span style={{ fontWeight: 900 }}>{tooltipText.value}</span>
             </div>
           </div>
         ) : null}
       </div>
 
-      <div className="text-xs opacity-70 mt-2">
+      <div className="text-base opacity-70 mt-3">
         Цвет: <span style={{ color: 'rgba(220,38,38,0.95)' }}>мало</span> →{' '}
         <span style={{ color: 'rgba(245,158,11,0.95)' }}>средне</span> →{' '}
         <span style={{ color: 'rgba(34,197,94,0.95)' }}>много</span>
       </div>
     </div>
+  );
+}
+
+/** ====== Header Main Buttons ====== */
+function HeaderMainButton({
+  label,
+  sublabel,
+  icon,
+  onClick,
+  variant,
+}: {
+  label: string;
+  sublabel?: string;
+  icon: React.ReactNode;
+  onClick: () => void;
+  variant: 'menu' | 'reviews';
+}) {
+  const base =
+    'inline-flex items-center gap-4 px-5 py-4 rounded-2xl font-extrabold shadow-sm border transition-all active:scale-[0.99]';
+
+  const styles =
+    variant === 'menu'
+      ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700/40'
+      : 'bg-amber-400 hover:bg-amber-500 text-black border-amber-600/30';
+
+  return (
+    <button className={`${base} ${styles}`} onClick={onClick} style={{ minWidth: 220 }}>
+      <span className="w-12 h-12 rounded-2xl bg-black/10 flex items-center justify-center text-2xl">{icon}</span>
+      <span className="flex flex-col items-start leading-tight">
+        <span className="text-lg">{label}</span>
+        {sublabel ? <span className="text-sm opacity-90 font-semibold">{sublabel}</span> : null}
+      </span>
+    </button>
   );
 }
 
@@ -398,10 +510,8 @@ export default function RestaurantDetailsPage() {
   const [from, setFrom] = useState<string>(toYmdLocalInput(new Date(today.getTime() - 30 * 86400000)));
   const [to, setTo] = useState<string>(toYmdLocalInput(today));
 
-  // ✅ активный пресет (для подсветки кнопки)
   const activePreset = useMemo(() => detectPreset(from, to), [from, to]);
 
-  // ✅ сворачивание блоков
   const [ordersOpen, setOrdersOpen] = useState(true);
   const [clientsOpen, setClientsOpen] = useState(true);
 
@@ -445,10 +555,6 @@ export default function RestaurantDetailsPage() {
     setFrom(toYmdLocalInput(new Date(t.getTime() - days * 86400000)));
   }
 
-  // ✅ стиль кнопки пресета (ярко-зелёная активная)
-  const presetBtnClass = (days: 7 | 30 | 90) =>
-    activePreset === days ? 'btn btn-sm btn-success fw-semibold' : 'btn btn-sm btn-light';
-
   const safe = {
     totalOrders: metrics?.totalOrders ?? 0,
     deliveredCount: metrics?.deliveredCount ?? 0,
@@ -473,375 +579,508 @@ export default function RestaurantDetailsPage() {
     repeatRate: metrics?.customers?.repeatRatePercent ?? 0,
   };
 
+  // ✅ корректный маршрут на страницу отзывов (общая страница + фильтр restaurantId)
   const reviewsUrl = useMemo(() => {
     const sp = new URLSearchParams();
+    sp.set('restaurantId', id);
     if (from) sp.set('from', from);
     if (to) sp.set('to', to);
-    return `/layout-20/restaurants/${id}/reviews?${sp.toString()}`;
+    return `/layout-20/restaurants/reviews?${sp.toString()}`;
   }, [id, from, to]);
 
+  // ✅ маршрут на меню ресторана
+  const menuUrl = useMemo(() => `/layout-20/restaurants/${id}/menu`, [id]);
+
+  const headerRight = (
+    <div className="flex items-center gap-4">
+      <HeaderMainButton
+        variant="menu"
+        icon="🍽️"
+        label="Меню"
+        sublabel="управление товарами"
+        onClick={() => router.push(menuUrl)}
+      />
+      <HeaderMainButton
+        variant="reviews"
+        icon="★"
+        label="Отзывы"
+        sublabel="рейтинг и комментарии"
+        onClick={() => router.push(reviewsUrl)}
+      />
+    </div>
+  );
+
   return (
-    <div className="space-y-4">
-      {/* Header */}
-      <div className="flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <button className="btn btn-sm btn-light" onClick={() => router.back()}>
+    <div className="space-y-5 rounded-2xl p-4 md:p-5 bg-slate-50">
+      {/* Top header */}
+      <div className="flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <button className="btn btn-lg btn-light" onClick={() => router.back()} style={{ borderRadius: 14 }}>
             ← Назад
           </button>
-          <h1 className="text-lg font-semibold">Ресторан</h1>
-          {loading && <div className="text-sm opacity-70">Загрузка...</div>}
+          <div>
+            <div className="text-3xl font-extrabold leading-tight">Ресторан · Аналитика</div>
+            <div className="text-lg opacity-70 mt-1">
+              {metrics?.restaurant?.nameRu ? metrics.restaurant.nameRu : '—'}
+              {loading ? ' · загрузка…' : ''}
+            </div>
+          </div>
         </div>
-
-        <div className="flex items-center gap-2">
-          <button className="btn btn-sm btn-light" onClick={() => alert('Меню (скоро)')}>
-            🍽️ Меню (скоро)
-          </button>
-          <button className="btn btn-sm btn-primary" onClick={() => router.push(reviewsUrl)}>
-            ★ Отзывы
-          </button>
-        </div>
+        {headerRight}
       </div>
 
-      {err && (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{err}</div>
-      )}
+      {err && <div className="rounded-2xl border border-red-200 bg-red-50 p-4 text-lg text-red-700">{err}</div>}
 
-      {/* Restaurant card + period */}
-      {metrics?.restaurant && (
-        <div className="rounded-xl border p-4 bg-white">
-          <div className="flex flex-col xl:flex-row xl:items-start xl:justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2">
-                <div className="font-semibold text-lg">{metrics.restaurant.nameRu}</div>
-                <span className="badge badge-light-primary">{metrics.restaurant.status}</span>
+      {/* Restaurant + Period */}
+      {metrics?.restaurant ? (
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+          <Panel
+            title={
+              <div className="flex items-center gap-3">
+                <span className="text-2xl font-extrabold">{metrics.restaurant.nameRu}</span>
+                <span className="badge badge-light-primary" style={{ fontSize: 14, padding: '8px 10px' }}>
+                  {metrics.restaurant.status}
+                </span>
               </div>
-              <div className="text-sm opacity-70 mt-1">
-                slug: <span className="text-black">{metrics.restaurant.slug}</span>
+            }
+            subtitle={
+              <div className="space-y-2">
+                <div>
+                  slug: <span className="font-semibold text-black">{metrics.restaurant.slug}</span>
+                </div>
+                <div>№ ресторана: {metrics.restaurant.number}</div>
               </div>
-              <div className="text-xs opacity-70 mt-1">ID: {metrics.restaurant.id}</div>
+            }
+            className="xl:col-span-1"
+          >
+            <div className="grid grid-cols-2 gap-4">
+              <div className="rounded-xl border border-slate-200 p-4 bg-black/[0.02]">
+                <div className="text-base opacity-70">Заказы</div>
+                <div className="text-3xl font-extrabold mt-1">{safe.totalOrders}</div>
+                <div className="text-base opacity-70 mt-2">
+                  ✅ {safe.deliveredCount} · ❌ {safe.canceledCount}
+                </div>
+              </div>
+              <div className="rounded-xl border border-slate-200 p-4 bg-black/[0.02]">
+                <div className="text-base opacity-70">Оплачено</div>
+                <div className="text-3xl font-extrabold mt-1">{safe.paidRate}%</div>
+                <div className="text-base opacity-70 mt-2">шт: {safe.paidCount}</div>
+              </div>
             </div>
+          </Panel>
 
-            <div className="rounded-xl border p-3 bg-black/[0.02] w-full xl:w-[520px]">
-              <div className="flex items-center justify-between gap-2">
-                <div className="text-sm font-semibold">Период аналитики</div>
+          {/* ✅ FIXED: Период аналитики - теперь аккуратно, ясно, кликабельно */}
+          <Panel
+            title={
+              <div className="flex items-center gap-3 flex-wrap">
+                <span>Период аналитики</span>
                 {metrics?.period ? (
-                  <div className="text-xs opacity-70">
-                    {new Date(metrics.period.from).toLocaleDateString('ru-RU')} →{' '}
+                  <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-base font-semibold">
+                    {new Date(metrics.period.from).toLocaleDateString('ru-RU')} —{' '}
                     {new Date(metrics.period.to).toLocaleDateString('ru-RU')} ({metrics.period.days} дн.)
-                  </div>
+                  </span>
                 ) : null}
               </div>
-
-              <div className="flex flex-wrap gap-2 mt-2">
-                <button className={presetBtnClass(7)} onClick={() => applyPreset(7)} style={{ borderRadius: 10 }}>
-                  7 дней
-                </button>
-                <button className={presetBtnClass(30)} onClick={() => applyPreset(30)} style={{ borderRadius: 10 }}>
-                  30 дней
-                </button>
-                <button className={presetBtnClass(90)} onClick={() => applyPreset(90)} style={{ borderRadius: 10 }}>
-                  90 дней
-                </button>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-3">
-                <div>
-                  <div className="text-xs opacity-70 mb-1">С даты</div>
-                  <input
-                    className="form-control form-control-sm"
-                    type="date"
-                    value={from}
-                    onChange={(e) => {
-                      setFrom(e.target.value);
-                      // если руками меняем даты — activePreset сам станет null (или совпадёт, если даты вернутся)
-                    }}
-                  />
+            }
+            right={
+              <span className="px-4 py-2 rounded-xl bg-slate-200 text-slate-700 text-base font-semibold">Фильтр</span>
+            }
+            className="xl:col-span-2"
+          >
+            <div className="space-y-6">
+              {/* Быстрые пресеты */}
+              <div className="p-5 rounded-2xl bg-slate-100 border border-slate-200">
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <div className="text-xl font-extrabold">Быстрый выбор</div>
+                  <div className="text-base opacity-70">Пресеты (7 / 30 / 90)</div>
                 </div>
-                <div>
-                  <div className="text-xs opacity-70 mb-1">По дату</div>
-                  <input
-                    className="form-control form-control-sm"
-                    type="date"
-                    value={to}
-                    onChange={(e) => {
-                      setTo(e.target.value);
-                    }}
-                  />
+
+                <div className="flex flex-wrap gap-4">
+                  {[7, 30, 90].map((d) => {
+                    const active = activePreset === d;
+                    return (
+                      <button
+                        key={d}
+                        onClick={() => applyPreset(d)}
+                        className={`px-6 py-3 rounded-2xl text-lg font-extrabold transition-all border
+                          ${
+                            active
+                              ? 'bg-emerald-600 text-white border-emerald-700 shadow-md'
+                              : 'bg-white text-slate-900 border-slate-300 hover:bg-slate-50'
+                          }`}
+                        title={`Выбрать период ${d} дней`}
+                      >
+                        {d} дней
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
-              <div className="text-xs opacity-70 mt-2">Период влияет на метрики и графики.</div>
+              {/* Ручной диапазон */}
+              <div className="p-5 rounded-2xl bg-white border border-slate-200">
+                <div className="flex items-center justify-between gap-4 mb-4">
+                  <div className="text-xl font-extrabold">Произвольный диапазон</div>
+                  <div className="text-base opacity-70">Выбери даты вручную</div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <div className="text-base font-semibold mb-2">С даты</div>
+                    <input
+                      type="date"
+                      value={from}
+                      onChange={(e) => setFrom(e.target.value)}
+                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                  </div>
+
+                  <div>
+                    <div className="text-base font-semibold mb-2">По дату</div>
+                    <input
+                      type="date"
+                      value={to}
+                      onChange={(e) => setTo(e.target.value)}
+                      className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Инфо */}
+              <div className="px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200 text-base text-blue-800">
+                Период влияет на метрики и графики. Пресет активен только если «по дату» = сегодня.
+              </div>
             </div>
-          </div>
+          </Panel>
         </div>
-      )}
+      ) : null}
 
-      {/* KPI */}
-      {metrics && (
-        <>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Выручка</div>
-              <div className="text-lg font-semibold">{fmtMoney(safe.revenueTotal)}</div>
-              <div className="text-xs opacity-70">Средний чек: {fmtMoney(safe.avgCheck)}</div>
-            </div>
+      {/* KPI Ribbon */}
+      {metrics ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+          <StatCard
+            theme="green"
+            icon="₸"
+            title="Выручка (итого)"
+            value={fmtMoney(safe.revenueTotal)}
+            hint={
+              <span>
+                Средний чек: <b>{fmtMoney(safe.avgCheck)}</b>
+              </span>
+            }
+            right={
+              safe.trend == null ? (
+                '—'
+              ) : (
+                <span className="inline-flex items-center gap-2">
+                  <span className="opacity-90">тренд</span> <b>{safe.trend}%</b>
+                </span>
+              )
+            }
+          />
 
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Тренд выручки</div>
-              <div className="text-lg font-semibold">{safe.trend == null ? '—' : `${safe.trend}%`}</div>
-              <div className="text-xs opacity-70">Текущие 30 vs предыдущие 30</div>
-            </div>
+          <StatCard
+            theme="blue"
+            icon="🧾"
+            title="Заказы"
+            value={safe.totalOrders.toLocaleString('ru-RU')}
+            hint={
+              <span>
+                Доставлено: <b>{safe.deliveredCount}</b> · Отменено: <b>{safe.canceledCount}</b>
+              </span>
+            }
+          />
 
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Заказы</div>
-              <div className="text-lg font-semibold">{safe.totalOrders}</div>
-              <div className="text-xs opacity-70">
-                Доставлено: {safe.deliveredCount} / Отменено: {safe.canceledCount}
-              </div>
-            </div>
+          <StatCard
+            theme="teal"
+            icon="💳"
+            title="Оплаты"
+            value={`${safe.paidRate}%`}
+            hint={
+              <span>
+                Оплачено: <b>{safe.paidCount}</b>
+              </span>
+            }
+          />
 
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">% оплат</div>
-              <div className="text-lg font-semibold">{safe.paidRate}%</div>
-              <div className="text-xs opacity-70">Оплачено: {safe.paidCount}</div>
-            </div>
+          <StatCard
+            theme="red"
+            icon="⛔"
+            title="Отмены"
+            value={`${safe.cancelRate}%`}
+            hint={
+              <span>
+                Отменено: <b>{safe.canceledCount}</b>
+              </span>
+            }
+          />
+        </div>
+      ) : null}
 
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">% отмен</div>
-              <div className="text-lg font-semibold">{safe.cancelRate}%</div>
-              <div className="text-xs opacity-70">Отменено: {safe.canceledCount}</div>
-            </div>
-
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Оценка</div>
-              <div className="text-lg font-semibold">{safe.ratingAvg == null ? '—' : `${safe.ratingAvg} ★`}</div>
-              <div className="text-xs opacity-70">
-                Отзывов: {safe.reviewsCount} ({safe.reviewRate}% от доставок)
-              </div>
-            </div>
-          </div>
-
-          {/* Customers row */}
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Клиенты (в период)</div>
-              <div className="text-lg font-semibold">{safe.activeCustomers}</div>
-              <div className="text-xs opacity-70">Новых: {safe.newCustomers}</div>
-            </div>
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Активные 7 дней</div>
-              <div className="text-lg font-semibold">{safe.activeCustomers7d}</div>
-              <div className="text-xs opacity-70">уникальных</div>
-            </div>
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Активные 30 дней</div>
-              <div className="text-lg font-semibold">{safe.activeCustomers30d}</div>
-              <div className="text-xs opacity-70">уникальных</div>
-            </div>
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Повторные</div>
-              <div className="text-lg font-semibold">{safe.repeatRate}%</div>
-              <div className="text-xs opacity-70">доля повторов</div>
-            </div>
-            <div className="rounded-xl border p-4 bg-white">
-              <div className="text-sm opacity-70">Отзывы</div>
-              <button className="btn btn-sm btn-light mt-2" onClick={() => router.push(reviewsUrl)}>
-                Открыть отзывы →
+      {/* Secondary KPI row */}
+      {metrics ? (
+        <div className="grid grid-cols-1 md:grid-cols-3 xl:grid-cols-5 gap-5">
+          <StatCard
+            theme="purple"
+            icon="👥"
+            title="Клиенты"
+            value={safe.activeCustomers.toLocaleString('ru-RU')}
+            hint={
+              <span>
+                Новых: <b>{safe.newCustomers}</b> · Повторы: <b>{safe.repeatRate}%</b>
+              </span>
+            }
+          />
+          <StatCard theme="gray" icon="7d" title="Активные 7 дней" value={safe.activeCustomers7d} hint="уникальных" />
+          <StatCard theme="gray" icon="30d" title="Активные 30 дней" value={safe.activeCustomers30d} hint="уникальных" />
+          <StatCard
+            theme="orange"
+            icon="★"
+            title="Рейтинг"
+            value={safe.ratingAvg == null ? '—' : `${safe.ratingAvg} ★`}
+            hint={
+              <span>
+                Отзывов: <b>{safe.reviewsCount}</b> · {safe.reviewRate}% от доставок
+              </span>
+            }
+            right={
+              <button
+                className="btn btn-lg btn-light"
+                onClick={() => router.push(reviewsUrl)}
+                style={{ borderRadius: 14 }}
+              >
+                Открыть
               </button>
-              <div className="text-xs opacity-70 mt-2">Отдельная страница</div>
-            </div>
-          </div>
+            }
+          />
+          <StatCard theme="blue" icon="📦" title="Доставлено" value={safe.deliveredCount} hint="шт. за период" />
+        </div>
+      ) : null}
 
-          {/* Charts */}
-          <div className="grid grid-cols-1 xl:grid-cols-2 gap-3">
+      {/* Charts */}
+      {metrics ? (
+        <div className="grid grid-cols-1 xl:grid-cols-2 gap-5">
+          <Panel
+            title="Выручка по дням"
+            subtitle="DELIVERED + PAID. Наведи на линию — увидишь дату и сумму."
+            right={
+              <span className="badge badge-light-success" style={{ fontSize: 14, padding: '8px 10px' }}>
+                Revenue
+              </span>
+            }
+          >
+            <NiceLineChart data={metrics.daily || []} valueKey="revenue" title="" height={230} formatValue={(v) => fmtMoney(v)} />
+          </Panel>
+
+          <Panel
+            title="Заказы по дням"
+            subtitle="Наведи на линию — увидишь дату и количество заказов."
+            right={
+              <span className="badge badge-light-primary" style={{ fontSize: 14, padding: '8px 10px' }}>
+                Orders
+              </span>
+            }
+          >
             <NiceLineChart
-              title="Выручка по дням (DELIVERED + PAID)"
-              subtitle="Наведи на линию/точку — увидишь дату и сумму рядом с мышкой."
-              data={metrics.daily || []}
-              valueKey="revenue"
-              height={200}
-              formatValue={(v) => fmtMoney(v)}
-            />
-            <NiceLineChart
-              title="Заказы по дням"
-              subtitle="Наведи на линию/точку — увидишь дату и количество заказов."
               data={metrics.daily || []}
               valueKey="orders"
-              height={200}
+              title=""
+              height={230}
               formatValue={(v) => `${Math.round(v).toLocaleString('ru-RU')}`}
             />
-          </div>
+          </Panel>
+        </div>
+      ) : null}
 
-          {/* Suggestions */}
-          <div className="rounded-xl border p-4 bg-white">
-            <div className="flex items-center justify-between gap-3 mb-2">
-              <div className="font-semibold">Советы</div>
-              <div className="text-xs opacity-70">Автоматические подсказки по цифрам</div>
-            </div>
-
-            {metrics.suggestions?.length ? (
-              <div className="space-y-2">
-                {metrics.suggestions.map((s, idx) => (
-                  <div key={idx} className="rounded-xl border p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className={badgeBySuggestionType(s.type)}>{s.title}</span>
-                      <span className="text-sm opacity-80">{s.text}</span>
-                    </div>
+      {/* Suggestions (muted) */}
+      {metrics ? (
+        <Panel
+          tone="muted"
+          title="Советы"
+          subtitle="Автоматические подсказки по цифрам"
+          right={
+            <span className="badge badge-light-primary" style={{ fontSize: 14, padding: '8px 10px' }}>
+              AI hints
+            </span>
+          }
+        >
+          {metrics.suggestions?.length ? (
+            <div className="space-y-3">
+              {metrics.suggestions.map((s, idx) => (
+                <div key={idx} className="rounded-2xl border border-slate-200 p-4 bg-black/[0.01]">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <span className={badgeBySuggestionType(s.type)} style={{ fontSize: 14, padding: '8px 10px' }}>
+                      {s.title}
+                    </span>
+                    <span className="text-lg opacity-80">{s.text}</span>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="text-sm opacity-70">Пока нет рекомендаций</div>
-            )}
-          </div>
-
-          {/* Recent orders (collapsible) */}
-          <div className="rounded-xl border p-4 bg-white">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="flex items-center gap-2">
-                <div className="font-semibold">Последние заказы</div>
-                <span className="badge badge-light-primary">{(metrics.recentOrders || []).length}</span>
-              </div>
-
-              <div className="flex items-center gap-2">
-                <button
-                  className="btn btn-sm btn-light"
-                  onClick={() => setOrdersOpen((v) => !v)}
-                  title="Свернуть/развернуть"
-                >
-                  {ordersOpen ? 'Свернуть' : 'Развернуть'}
-                </button>
-
-                <button className="btn btn-sm btn-light" onClick={() => router.push('/layout-20/orders')}>
-                  Все заказы →
-                </button>
-              </div>
+                </div>
+              ))}
             </div>
+          ) : (
+            <div className="text-lg opacity-70">Пока нет рекомендаций</div>
+          )}
+        </Panel>
+      ) : null}
 
-            {ordersOpen ? (
-              <div className="overflow-auto rounded-xl border">
-                <table className="min-w-[1200px] w-full text-sm">
-                  <thead className="bg-black/5">
-                    <tr>
-                      <th className="text-left p-3">ID</th>
-                      <th className="text-left p-3">Дата</th>
-                      <th className="text-left p-3">Статус</th>
-                      <th className="text-left p-3">Оплата</th>
-                      <th className="text-left p-3">Сумма</th>
-                      <th className="text-left p-3">Клиент</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {(metrics.recentOrders || []).map((o, idx) => (
-                      <tr
-                        key={o.id}
-                        className={`border-t hover:bg-black/5 cursor-pointer ${idx % 2 ? 'bg-black/[0.01]' : ''}`}
-                        onClick={() => router.push(`/layout-20/orders/${o.id}`)}
-                        title="Открыть заказ"
-                      >
-                        <td className="p-3 font-mono text-xs">{o.id}</td>
-                        <td className="p-3">{fmtDateTime(o.createdAt)}</td>
-                        <td className="p-3">
-                          <span className={statusBadge(o.status)}>{o.status}</span>
-                        </td>
-                        <td className="p-3">
-                          <span className={statusBadge(o.paymentStatus)}>{o.paymentStatus}</span>
-                          <span className="text-xs opacity-70 ml-2">{o.paymentMethod || '—'}</span>
-                        </td>
-                        <td className="p-3 font-semibold">{fmtMoney(o.total)}</td>
-                        <td className="p-3">
-                          <div className="flex flex-col">
-                            <span className="font-semibold">{o.userName || o.userId}</span>
-                            <span className="text-xs opacity-70">{o.userPhone || '—'}</span>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-
-                    {(metrics.recentOrders || []).length === 0 && (
-                      <tr>
-                        <td className="p-6 opacity-70" colSpan={6}>
-                          Нет заказов за выбранный период
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            ) : (
-              <div className="text-sm opacity-70">Список заказов свернут</div>
-            )}
-          </div>
-
-          {/* Top clients (collapsible) */}
-          <div className="rounded-xl border p-4 bg-white">
-            <div className="flex items-center justify-between gap-3 mb-3">
-              <div className="flex items-center gap-2">
-                <div className="font-semibold">ТОП клиенты</div>
-                <span className="badge badge-light-primary">{(metrics.topClients || []).length}</span>
-              </div>
-
+      {/* Recent Orders */}
+      {metrics ? (
+        <Panel
+          title={
+            <div className="flex items-center gap-3">
+              <span>Последние заказы</span>
+              <span className="badge badge-light-primary" style={{ fontSize: 14, padding: '8px 10px' }}>
+                {(metrics.recentOrders || []).length}
+              </span>
+            </div>
+          }
+          subtitle="Кликабельно → открывает заказ"
+          right={
+            <div className="flex items-center gap-3">
               <button
-                className="btn btn-sm btn-light"
-                onClick={() => setClientsOpen((v) => !v)}
-                title="Свернуть/развернуть"
+                className="btn btn-lg btn-light"
+                onClick={() => setOrdersOpen((v) => !v)}
+                style={{ borderRadius: 14 }}
               >
-                {clientsOpen ? 'Свернуть' : 'Развернуть'}
+                {ordersOpen ? 'Свернуть' : 'Развернуть'}
+              </button>
+              <button className="btn btn-lg btn-light" onClick={() => router.push('/layout-20/orders')} style={{ borderRadius: 14 }}>
+                Все заказы →
               </button>
             </div>
+          }
+        >
+          {ordersOpen ? (
+            <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="min-w-[1200px] w-full text-base">
+                <thead className="bg-black/5 sticky top-0">
+                  <tr>
+                    <th className="text-left p-4">ID</th>
+                    <th className="text-left p-4">Дата</th>
+                    <th className="text-left p-4">Статус</th>
+                    <th className="text-left p-4">Оплата</th>
+                    <th className="text-left p-4">Сумма</th>
+                    <th className="text-left p-4">Клиент</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(metrics.recentOrders || []).map((o, idx) => (
+                    <tr
+                      key={o.id}
+                      className={`border-t hover:bg-black/5 cursor-pointer ${idx % 2 ? 'bg-black/[0.01]' : ''}`}
+                      onClick={() => router.push(`/layout-20/orders/${o.id}`)}
+                      title="Открыть заказ"
+                    >
+                      <td className="p-4 font-mono text-sm">{o.id}</td>
+                      <td className="p-4">{fmtDateTime(o.createdAt)}</td>
+                      <td className="p-4">
+                        <span className={statusBadge(o.status)} style={{ fontSize: 14, padding: '8px 10px' }}>
+                          {o.status}
+                        </span>
+                      </td>
+                      <td className="p-4">
+                        <span className={statusBadge(o.paymentStatus)} style={{ fontSize: 14, padding: '8px 10px' }}>
+                          {o.paymentStatus}
+                        </span>
+                        <span className="text-base opacity-70 ml-3">{o.paymentMethod || '—'}</span>
+                      </td>
+                      <td className="p-4 font-extrabold">{fmtMoney(o.total)}</td>
+                      <td className="p-4">
+                        <div className="flex flex-col">
+                          <span className="font-extrabold">{o.userName || o.userId}</span>
+                          <span className="text-base opacity-70">{o.userPhone || '—'}</span>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
 
-            {clientsOpen ? (
-              <>
-                <div className="text-xs opacity-70 mb-3">Кликабельно → профиль клиента</div>
+                  {(metrics.recentOrders || []).length === 0 && (
+                    <tr>
+                      <td className="p-6 opacity-70 text-lg" colSpan={6}>
+                        Нет заказов за выбранный период
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-lg opacity-70">Список заказов свернут</div>
+          )}
+        </Panel>
+      ) : null}
 
-                <div className="overflow-auto rounded-xl border">
-                  <table className="min-w-[1100px] w-full text-sm">
-                    <thead className="bg-black/5">
-                      <tr>
-                        <th className="text-left p-3">Клиент</th>
-                        <th className="text-left p-3">Телефон</th>
-                        <th className="text-left p-3">Статус</th>
-                        <th className="text-left p-3">Заказов</th>
-                        <th className="text-left p-3">Потрачено</th>
-                        <th className="text-left p-3">Последний заказ</th>
-                        <th className="text-left p-3">Дней с последнего</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(metrics.topClients || []).map((u, idx) => (
-                        <tr
-                          key={u.userId}
-                          className={`border-t cursor-pointer hover:bg-black/5 ${idx % 2 ? 'bg-black/[0.01]' : ''}`}
-                          onClick={() => router.push(`/layout-20/users/${u.userId}`)}
-                          title="Открыть клиента"
-                        >
-                          <td className="p-3">{u.name || u.userId}</td>
-                          <td className="p-3">{u.phone || '—'}</td>
-                          <td className="p-3">{u.status}</td>
-                          <td className="p-3">{u.ordersCount}</td>
-                          <td className="p-3">{fmtMoney(u.spent)}</td>
-                          <td className="p-3">{fmtDateTime(u.lastOrderAt)}</td>
-                          <td className="p-3">{u.recencyDays ?? '—'}</td>
-                        </tr>
-                      ))}
+      {/* Top Clients (muted) */}
+      {metrics ? (
+        <Panel
+          tone="muted"
+          title={
+            <div className="flex items-center gap-3">
+              <span>ТОП клиенты</span>
+              <span className="badge badge-light-primary" style={{ fontSize: 14, padding: '8px 10px' }}>
+                {(metrics.topClients || []).length}
+              </span>
+            </div>
+          }
+          subtitle="Кликабельно → профиль клиента"
+          right={
+            <button
+              className="btn btn-lg btn-light"
+              onClick={() => setClientsOpen((v) => !v)}
+              style={{ borderRadius: 14 }}
+            >
+              {clientsOpen ? 'Свернуть' : 'Развернуть'}
+            </button>
+          }
+        >
+          {clientsOpen ? (
+            <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
+              <table className="min-w-[1100px] w-full text-base">
+                <thead className="bg-black/5 sticky top-0">
+                  <tr>
+                    <th className="text-left p-4">Клиент</th>
+                    <th className="text-left p-4">Телефон</th>
+                    <th className="text-left p-4">Статус</th>
+                    <th className="text-left p-4">Заказов</th>
+                    <th className="text-left p-4">Потрачено</th>
+                    <th className="text-left p-4">Последний заказ</th>
+                    <th className="text-left p-4">Дней с последнего</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(metrics.topClients || []).map((u, idx) => (
+                    <tr
+                      key={u.userId}
+                      className={`border-t cursor-pointer hover:bg-black/5 ${idx % 2 ? 'bg-black/[0.01]' : ''}`}
+                      onClick={() => router.push(`/layout-20/users/${u.userId}`)}
+                      title="Открыть клиента"
+                    >
+                      <td className="p-4 font-extrabold">{u.name || u.userId}</td>
+                      <td className="p-4">{u.phone || '—'}</td>
+                      <td className="p-4">{u.status}</td>
+                      <td className="p-4 font-semibold">{u.ordersCount}</td>
+                      <td className="p-4 font-extrabold">{fmtMoney(u.spent)}</td>
+                      <td className="p-4">{fmtDateTime(u.lastOrderAt)}</td>
+                      <td className="p-4 font-semibold">{u.recencyDays ?? '—'}</td>
+                    </tr>
+                  ))}
 
-                      {(metrics.topClients || []).length === 0 && (
-                        <tr>
-                          <td className="p-6 opacity-70" colSpan={7}>
-                            Нет данных
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              </>
-            ) : (
-              <div className="text-sm opacity-70">Список клиентов свернут</div>
-            )}
-          </div>
-        </>
-      )}
+                  {(metrics.topClients || []).length === 0 && (
+                    <tr>
+                      <td className="p-6 opacity-70 text-lg" colSpan={7}>
+                        Нет данных
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="text-lg opacity-70">Список клиентов свернут</div>
+          )}
+        </Panel>
+      ) : null}
     </div>
   );
 }

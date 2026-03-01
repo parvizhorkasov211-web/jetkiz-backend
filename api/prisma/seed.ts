@@ -14,6 +14,12 @@ function pick<T>(arr: T[]) {
   return arr[randInt(0, arr.length - 1)];
 }
 
+function genIin(idx: number) {
+  // 12 цифр, просто чтобы проходило валидации и было уникально для seed
+  const base = 100000000000 + idx;
+  return String(base).padStart(12, '0');
+}
+
 async function main() {
   console.log('🌱 Seed started...');
   console.log('DATABASE_URL exists:', Boolean(process.env.DATABASE_URL));
@@ -44,14 +50,23 @@ async function main() {
       },
     });
 
+    // ✅ FoodCategory теперь принадлежит ресторану:
+    // - where: по составному unique ключу restaurantId_code
+    // - create: обязательно связываем с restaurant
     const category = await prisma.foodCategory.upsert({
-      where: { code: 'seed-cat' },
+      where: {
+        restaurantId_code: {
+          restaurantId: restaurant.id,
+          code: 'seed-cat',
+        },
+      },
       update: {},
       create: {
         code: 'seed-cat',
         titleRu: 'Seed Категория',
         titleKk: 'Seed Санат',
         sortOrder: 1,
+        restaurant: { connect: { id: restaurant.id } },
       },
     });
 
@@ -65,8 +80,7 @@ async function main() {
           categoryId: category.id,
           titleRu,
           titleKk: titleRu,
-          descriptionRu: 'Тестовый продукт для seed',
-          descriptionKk: 'Seed тест өнімі',
+          // ❌ В твоей Prisma модели Product нет descriptionRu/descriptionKk
           price: randInt(1200, 6500),
           isAvailable: true,
         },
@@ -96,6 +110,7 @@ async function main() {
     const oldOrderIds = oldOrders.map((o) => o.id);
 
     if (oldOrderIds.length) {
+      // оставляю как было (у тебя, судя по проекту, Review связан с orderId)
       await prisma.review.deleteMany({ where: { orderId: { in: oldOrderIds } } as any });
       await prisma.orderItem.deleteMany({ where: { orderId: { in: oldOrderIds } } as any });
       await prisma.order.deleteMany({ where: { id: { in: oldOrderIds } } as any });
@@ -140,7 +155,13 @@ async function main() {
           total,
           addressId: 'seed-address-id',
           phone: user.phone,
-          comment: pick([null, 'Побыстрее пожалуйста', 'Без лука', 'Оставить у двери', 'Позвонить за 5 минут']),
+          comment: pick([
+            null,
+            'Побыстрее пожалуйста',
+            'Без лука',
+            'Оставить у двери',
+            'Позвонить за 5 минут',
+          ]),
           leaveAtDoor: Math.random() < 0.35,
           paymentMethod: pick([...paymentMethods]) as any,
           paymentStatus: 'PAID' as any,
@@ -234,14 +255,27 @@ async function main() {
           firstName: name.firstName,
           lastName: name.lastName,
           isOnline: true as any,
+          lastSeenAt: new Date() as any,
           lastActiveAt: new Date() as any,
         } as any,
         create: {
           userId: u.id,
           firstName: name.firstName,
           lastName: name.lastName,
+          iin: genIin(i + 1),
           isOnline: true as any,
+          lastSeenAt: new Date() as any,
           lastActiveAt: new Date() as any,
+
+          // опциональные поля (чтобы не было сюрпризов)
+          personalFeeOverride: null,
+          payoutBonusAdd: 0 as any,
+          courierCommissionPctOverride: null,
+          addressText: null,
+          comment: null,
+          blockedAt: null,
+          blockReason: null,
+          lastAssignedAt: null,
         } as any,
       });
     }
@@ -254,11 +288,11 @@ async function main() {
     if (!tariff) {
       await prisma.courierTariff.create({
         data: {
-          title: 'Base Tariff',
-          feeFixed: 500,
-          feePerOrder: 0,
+          fee: 500,
           isActive: true,
-        } as any,
+          startsAt: new Date(),
+          endsAt: null,
+        },
       });
     }
 

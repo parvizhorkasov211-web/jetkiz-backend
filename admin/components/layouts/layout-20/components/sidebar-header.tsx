@@ -1,97 +1,80 @@
-import { Check, ChevronsUpDown, Gem, Hexagon, Layers2, PanelLeft, Zap } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import {
-  DropdownMenu,
-  DropdownMenuItem,
-  DropdownMenuContent,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu';
-import { useState } from 'react';
-import { cn } from '@/lib/utils';
-import { useLayout } from './context';
+"use client";
 
-interface Team {
-  icon: React.ElementType;
-  name: string;
-  color: string;
-  members: number;
-}
+import Link from "next/link";
+import Image from "next/image";
 
 export function SidebarHeader() {
-  const { sidebarToggle } = useLayout();
-  const teams: Team[] = [
-    {
-      icon: Zap,
-      name: "Thunder AI",
-      color: "bg-blue-600 text-white hover:bg-blue-700",
-      members: 8
-    },
-    {
-      icon: Gem,
-      name: "Clarity AI",
-      color: "bg-fuchsia-600 text-white hover:bg-fuchsia-700",
-      members: 6
-    },
-    {
-      icon: Hexagon,
-      name: "Lightning AI",
-      color: "bg-yellow-600 text-white hover:bg-yellow-700",
-      members: 12
-    },
-    {
-      icon: Layers2,
-      name: "Bold AI",
-      color: "bg-blue-600 text-white hover:bg-blue-700",
-      members: 4
-    }
-  ];
-
-  const [selectedTeam, setSelectedTeam] = useState<Team>(teams[0]);
-
   return (
-    <div className="flex items-center justify-between shrink-0 pt-3.5 px-2">
-      <div className="flex items-center gap-2.5">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="ghost"
-              className=""
-            >
-              <div className="flex items-center gap-2">
-                <div className={cn("size-6 rounded-md flex items-center justify-center", selectedTeam.color)}>
-                  <selectedTeam.icon className="text-white" />
-                </div>
-                <span className="text-foreground text-sm font-medium">
-                  {selectedTeam.name}
-                </span>
-              </div>
-              <ChevronsUpDown className="opacity-100" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent
-            className="w-56 dark"
-            side="bottom"
-            align="start"
-            sideOffset={10}
-            alignOffset={10}
+    <div
+      id="kt_app_sidebar_logo"
+      style={{
+        width: "100%",
+        padding: "18px 0", // 0 по бокам => от края до края
+        borderBottom: "1px solid rgba(255,255,255,0.08)",
+      }}
+    >
+      <Link
+        href="/layout-20"
+        style={{
+          width: "100%",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center", // центрируем по ширине сайдбара
+          gap: 14,
+          textDecoration: "none",
+          padding: "0 16px", // аккуратный внутренний отступ (если хочешь прям в ноль — поставь 0)
+        }}
+      >
+        {/* большой логотип */}
+        <div
+          style={{
+            width: 64,
+            height: 64,
+            borderRadius: 18,
+            overflow: "hidden",
+            background: "rgba(255,255,255,0.06)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flex: "0 0 auto",
+          }}
+        >
+          <Image
+            src="/media/brand-logos/jetkiz.png"
+            alt="JETKIZ"
+            width={64}
+            height={64}
+            priority
+          />
+        </div>
+
+        {/* крупный текст */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <span
+            style={{
+              color: "#fff",
+              fontWeight: 900,
+              fontSize: 18,
+              lineHeight: "20px",
+              letterSpacing: "0.4px",
+            }}
           >
-            {teams.map((team) => (
-              <DropdownMenuItem key={team.name} onClick={() => setSelectedTeam(team)} data-active={selectedTeam.name === team.name}>
-                <div className={cn("size-6 rounded-md flex items-center justify-center", team.color)}>
-                  <team.icon className="size-3.5" />
-                </div>
-                <span className="text-mono text-sm font-medium">{team.name}</span>
-                {selectedTeam.name === team.name && (
-                  <Check className="ms-auto size-4 text-primary" />
-                )}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuContent>
-        </DropdownMenu> 
-      </div>
-      <Button mode="icon" variant="ghost" onClick={() => sidebarToggle()}  className="hidden lg:inline-flex">
-        <PanelLeft />
-      </Button>
+            JETKIZ
+          </span>
+          <span
+            style={{
+              color: "rgba(255,255,255,0.7)",
+              fontWeight: 700,
+              fontSize: 12,
+              lineHeight: "14px",
+            }}
+          >
+            Admin Panel
+          </span>
+        </div>
+      </Link>
     </div>
   );
 }
+
+export default SidebarHeader;

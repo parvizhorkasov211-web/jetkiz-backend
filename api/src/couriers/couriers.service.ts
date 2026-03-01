@@ -1,4 +1,4 @@
-// api/src/couriers/couriers.service.ts
+// src/couriers/couriers.service.ts
 import {
   BadRequestException,
   ForbiddenException,
@@ -7,59 +7,400 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import * as bcrypt from 'bcryptjs';
+import { LedgerType, OrderStatus } from '@prisma/client';
+import { UpdateCourierProfileDto } from './dto/update-courier-profile.dto';
+import { BlockCourierDto } from './dto/block-courier.dto';
 
 type JwtUser = { id: string; role?: string };
+
+function safeDate(v: any): Date | null {
+  try {
+    if (!v) return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? null : d;
+  } catch {
+    return null;
+  }
+}
+
+function diffSec(a?: Date | null, b?: Date | null): number | null {
+  const aa = a ? a.getTime() : NaN;
+  const bb = b ? b.getTime() : NaN;
+  if (!Number.isFinite(aa) || !Number.isFinite(bb)) return null;
+  const s = Math.floor((aa - bb) / 1000);
+  return Number.isFinite(s) && s >= 0 ? s : null;
+}
+
+type OnlineStats = {
+  lastOnlineAt: Date | null;
+  lastOfflineAt: Date | null;
+  onlineForSec: number | null;
+  lastSessionSec: number | null;
+};
+
+/**
+ * Build online session stats from CourierOnlineEvent list (ordered by at desc).
+ * We only need the most recent online/offline transition for each courier.
+ */
+function buildOnlineStatsMap(
+  courierIds: string[],
+  events: Array<{ courierUserId: string; isOnline: boolean; at: Date }>,
+  now: Date,
+  lastActiveAtMap?: Map<string, Date | null>,
+): Map<string, OnlineStats> {
+  const wanted = new Set(courierIds);
+  const out = new Map<string, OnlineStats>();
+
+  const lastOnline = new Map<string, Date>();
+  const lastOffline = new Map<string, Date>();
+
+  for (const ev of events || []) {
+    const id = ev.courierUserId;
+    if (!wanted.has(id)) continue;
+
+    if (ev.isOnline) {
+      if (!lastOnline.has(id)) lastOnline.set(id, ev.at);
+    } else {
+      if (!lastOffline.has(id)) lastOffline.set(id, ev.at);
+    }
+  }
+
+  for (const id of courierIds) {
+    const lo = lastOnline.get(id) ?? null;
+    const lf = lastOffline.get(id) ?? null;
+
+    const lastSessionSec =
+      lo && lf && lf.getTime() >= lo.getTime() ? diffSec(lf, lo) : null;
+
+    let onlineForSec: number | null = null;
+    if (lo) onlineForSec = diffSec(now, lo);
+
+    if ((onlineForSec == null || onlineForSec < 0) && lastActiveAtMap) {
+      const la = lastActiveAtMap.get(id) ?? null;
+      if (la) onlineForSec = diffSec(now, la);
+    }
+
+    out.set(id, {
+      lastOnlineAt: lo,
+      lastOfflineAt: lf,
+      onlineForSec,
+      lastSessionSec,
+    });
+  }
+
+  return out;
+}
 
 @Injectable()
 export class CouriersService {
   constructor(private readonly prisma: PrismaService) {}
 
   private ensureAdmin(u: JwtUser) {
-    if ((u.role ?? 'CLIENT') !== 'ADMIN') throw new ForbiddenException('Only admin');
+    if ((u.role ?? 'CLIENT') !== 'ADMIN') {
+      throw new ForbiddenException('Only admin');
+    }
   }
 
-  async list(
+  // =========================
+  // ✅ TARIFF (public)
+  // =========================
+  async getActiveTariffPublic(user: JwtUser) {
+    const t = await this.prisma.courierTariff.findFirst({
+      where: { isActive: true },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        fee: true,
+        isActive: true,
+        startsAt: true,
+        endsAt: true,
+      },
+    });
+
+    return t ?? { id: null, fee: 0, isActive: false };
+  }
+
+  // =========================
+  // ✅ TARIFF (admin)
+  // =========================
+  async setGlobalTariff(user: JwtUser, body: { fee: number }) {
+    this.ensureAdmin(user);
+
+    const fee = Math.max(0, Math.round(Number(body?.fee) || 0));
+    if (!fee) throw new BadRequestException('fee must be > 0');
+
+    await this.prisma.$transaction([
+      this.prisma.courierTariff.updateMany({
+        where: { isActive: true },
+        data: { isActive: false, endsAt: new Date() },
+      }),
+      this.prisma.courierTariff.create({
+        data: {
+          fee,
+          isActive: true,
+          startsAt: new Date(),
+          endsAt: null,
+        },
+        select: { id: true },
+      }),
+    ]);
+
+    return this.getActiveTariffPublic(user);
+  }
+
+  // =========================
+  // ✅ GLOBAL COMMISSION DEFAULT (admin)
+  // =========================
+  async getGlobalCommissionDefault(user: JwtUser) {
+    this.ensureAdmin(user);
+
+    // дефолт, если записи ещё нет
+    const DEFAULT_PCT = 15;
+
+    // Важно: в FinanceConfig нет createdAt (есть только updatedAt), поэтому сортируем по updatedAt
+    const cfg = await this.prisma.financeConfig.findFirst({
+      orderBy: { updatedAt: 'desc' },
+      select: {
+        id: true,
+        courierCommissionPctDefault: true,
+        updatedAt: true,
+      },
+    });
+
+    const pctRaw = cfg?.courierCommissionPctDefault;
+    const pct = Math.max(
+      0,
+      Math.min(100, Math.round(Number(pctRaw ?? DEFAULT_PCT) || 0)),
+    );
+
+    return { pct };
+  }
+
+  async setGlobalCommissionDefault(user: JwtUser, body: { pct: number }) {
+    this.ensureAdmin(user);
+
+    const pct = Math.max(0, Math.min(100, Math.round(Number(body?.pct) || 0)));
+    if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
+      throw new BadRequestException('pct must be between 0 and 100');
+    }
+
+    // Важно: в FinanceConfig нет createdAt (есть только updatedAt)
+    const existing = await this.prisma.financeConfig.findFirst({
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+
+    if (existing?.id) {
+      await this.prisma.financeConfig.update({
+        where: { id: existing.id },
+        data: { courierCommissionPctDefault: pct },
+        select: { id: true },
+      });
+    } else {
+      // FinanceConfig.id обязателен (в схеме нет default) — создаём одну запись с фиксированным id
+      await this.prisma.financeConfig.create({
+        data: { id: 'main', courierCommissionPctDefault: pct },
+        select: { id: true },
+      });
+    }
+
+    return { pct };
+  }
+
+  // =========================
+  // ✅ PERSONAL FEE (admin)
+  // =========================
+  async setCourierPersonalFeeOverride(
     user: JwtUser,
-    opts: { q?: string; page: number; limit: number; online?: boolean },
+    courierUserId: string,
+    body: { fee: number | null },
   ) {
     this.ensureAdmin(user);
 
-    const p = Math.max(1, Number(opts.page || 1));
-    const l = Math.min(200, Math.max(1, Number(opts.limit || 20)));
-    const skip = (p - 1) * l;
+    const feeRaw = body?.fee;
+    const fee =
+      feeRaw == null ? null : Math.max(0, Math.round(Number(feeRaw) || 0));
+
+    if (feeRaw != null && !Number.isFinite(Number(feeRaw))) {
+      throw new BadRequestException('fee must be a number or null');
+    }
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const updated = await this.prisma.courierProfile.update({
+      where: { userId: courierUserId },
+      data: { personalFeeOverride: fee },
+      select: {
+        userId: true,
+        personalFeeOverride: true,
+        payoutBonusAdd: true,
+        updatedAt: true,
+      },
+    });
+
+    return updated;
+  }
+
+  // =========================
+  // ✅ METRICS (admin)
+  // =========================
+  async getCourierStatusSummary(user: JwtUser) {
+    this.ensureAdmin(user);
+
+    const total = await this.prisma.courierProfile.count();
+    const online = await this.prisma.courierProfile.count({
+      where: { isOnline: true },
+    });
+    const offline = total - online;
+
+    const busyCourierIds = await this.prisma.order.findMany({
+      where: {
+        courierId: { not: null },
+        status: {
+          in: [
+            OrderStatus.ACCEPTED,
+            OrderStatus.COOKING,
+            OrderStatus.READY,
+            OrderStatus.ON_THE_WAY,
+          ],
+        },
+      },
+      select: { courierId: true },
+      take: 5000,
+    });
+
+    const busy = new Set(
+      (busyCourierIds || []).map((x: any) => x.courierId).filter(Boolean),
+    ).size;
+
+    return {
+      total,
+      online,
+      offline,
+      busy,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  async getCourierOnlineTimeline(user: JwtUser) {
+    this.ensureAdmin(user);
+
+    const now = new Date();
+    const points: Array<{ hour: number; ts: string; online: number }> = [];
+
+    for (let i = 23; i >= 0; i--) {
+      const from = new Date(now.getTime() - i * 60 * 60 * 1000);
+      const to = new Date(from.getTime() + 60 * 60 * 1000);
+
+      const onlineCount = await this.prisma.courierProfile.count({
+        where: {
+          lastSeenAt: { gte: from, lt: to },
+        },
+      });
+
+      points.push({
+        hour: from.getHours(),
+        ts: from.toISOString(),
+        online: onlineCount,
+      });
+    }
+
+    return points;
+  }
+
+  async getCourierOnlineSeries(user: JwtUser) {
+    this.ensureAdmin(user);
+
+    const now = new Date();
+    const days = 14;
+    const out: Array<{
+      bucket: string;
+      seenUnique: number;
+      activeUnique: number;
+    }> = [];
+
+    for (let i = days - 1; i >= 0; i--) {
+      const dayStart = new Date(now.getTime() - i * 24 * 60 * 60 * 1000);
+      dayStart.setHours(0, 0, 0, 0);
+      const dayEnd = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+      const seen = await this.prisma.courierProfile.count({
+        where: { lastSeenAt: { gte: dayStart, lt: dayEnd } },
+      });
+      const active = await this.prisma.courierProfile.count({
+        where: { lastActiveAt: { gte: dayStart, lt: dayEnd } },
+      });
+
+      out.push({
+        bucket: dayStart.toISOString(),
+        seenUnique: seen,
+        activeUnique: active,
+      });
+    }
+
+    return out;
+  }
+
+  // =========================
+  // ✅ ADMIN LIST
+  // =========================
+  async getCouriersAdmin(
+    user: JwtUser,
+    opts: {
+      page: number;
+      limit: number;
+      q?: string;
+      online?: string;
+      active?: string;
+    },
+  ) {
+    this.ensureAdmin(user);
+
+    const page = Math.max(1, Math.trunc(Number(opts.page) || 1));
+    const limit = Math.max(1, Math.min(200, Math.trunc(Number(opts.limit) || 20)));
+    const skip = (page - 1) * limit;
+    const take = limit;
 
     const whereUser: any = { role: 'COURIER' };
+
+    if (opts.active === 'true') whereUser.isActive = true;
+    if (opts.active === 'false') whereUser.isActive = false;
+
+    const whereProfile: any = {};
+
+    if (opts.online === 'true') whereProfile.isOnline = true;
+    if (opts.online === 'false') whereProfile.isOnline = false;
 
     if (opts.q && opts.q.trim()) {
       const q = opts.q.trim();
       whereUser.OR = [
-        { phone: { contains: q, mode: 'insensitive' } },
-        { courierProfile: { firstName: { contains: q, mode: 'insensitive' } } },
-        { courierProfile: { lastName: { contains: q, mode: 'insensitive' } } },
-        { courierProfile: { iin: { contains: q, mode: 'insensitive' } } },
+        { phone: { contains: q } },
+        { firstName: { contains: q, mode: 'insensitive' } },
+        { lastName: { contains: q, mode: 'insensitive' } },
+      ];
+
+      whereProfile.OR = [
+        { firstName: { contains: q, mode: 'insensitive' } },
+        { lastName: { contains: q, mode: 'insensitive' } },
+        { iin: { contains: q } },
       ];
     }
 
-    if (opts.online != null) {
-      whereUser.courierProfile = {
-        ...(whereUser.courierProfile ?? {}),
-        isOnline: opts.online,
-      };
-    }
-
-    const [items, total] = await this.prisma.$transaction([
+    const [itemsRaw, total] = await this.prisma.$transaction([
       this.prisma.user.findMany({
         where: whereUser,
         orderBy: { createdAt: 'desc' },
         skip,
-        take: l,
+        take,
         select: {
           id: true,
           phone: true,
           isActive: true,
-          createdAt: true,
+          avatarUrl: true,
           courierProfile: {
+            where: whereProfile,
             select: {
+              userId: true,
               firstName: true,
               lastName: true,
               iin: true,
@@ -67,7 +408,15 @@ export class CouriersService {
               lastSeenAt: true,
               lastActiveAt: true,
               lastAssignedAt: true,
+              blockedAt: true,
+              blockReason: true,
               personalFeeOverride: true,
+              payoutBonusAdd: true,
+              courierCommissionPctOverride: true, // ✅
+              addressText: true,
+              comment: true,
+              createdAt: true,
+              updatedAt: true,
             },
           },
         },
@@ -75,29 +424,150 @@ export class CouriersService {
       this.prisma.user.count({ where: whereUser }),
     ]);
 
-    // ВАЖНО: фронт у тебя ждёт плоские поля (как раньше)
-    const mapped = items
-      .filter((u) => !!u.courierProfile)
-      .map((u) => ({
-        id: u.id,
-        userId: u.id,
-        phone: u.phone,
-        isActive: u.isActive,
-        createdAt: u.createdAt,
-        firstName: u.courierProfile!.firstName,
-        lastName: u.courierProfile!.lastName,
-        iin: u.courierProfile!.iin,
-        isOnline: u.courierProfile!.isOnline,
-        lastSeenAt: u.courierProfile!.lastSeenAt,
-        lastActiveAt: u.courierProfile!.lastActiveAt,
-        lastAssignedAt: u.courierProfile!.lastAssignedAt,
-        personalFeeOverride: u.courierProfile!.personalFeeOverride,
-      }));
+    const courierIds = (itemsRaw || [])
+      .filter((u: any) => Boolean(u?.courierProfile))
+      .map((u: any) => u.id);
 
-    return { items: mapped, meta: { page: p, limit: l, total } };
+    const lastActiveAtMap = new Map<string, Date | null>();
+    for (const u of itemsRaw || []) {
+      const p = u?.courierProfile;
+      if (p?.userId) lastActiveAtMap.set(p.userId, safeDate(p.lastActiveAt));
+    }
+
+    const events = await this.prisma.courierOnlineEvent.findMany({
+      where: { courierUserId: { in: courierIds } },
+      orderBy: { at: 'desc' },
+      select: { courierUserId: true, isOnline: true, at: true },
+      take: Math.min(5000, Math.max(1000, courierIds.length * 20)),
+    });
+
+    const statsMap = buildOnlineStatsMap(
+      courierIds,
+      events as any,
+      new Date(),
+      lastActiveAtMap,
+    );
+
+    const items = (itemsRaw || [])
+      .filter((u: any) => Boolean(u?.courierProfile))
+      .map((u: any) => {
+        const p = u.courierProfile;
+
+        const lastSeenAt = p?.lastSeenAt ? new Date(p.lastSeenAt) : null;
+        const lastActiveAt = p?.lastActiveAt ? new Date(p.lastActiveAt) : null;
+        const lastAssignedAt = p?.lastAssignedAt ? new Date(p.lastAssignedAt) : null;
+
+        const st = statsMap.get(u.id);
+        const lastOnlineAt = st?.lastOnlineAt ?? null;
+        const lastOfflineAt = st?.lastOfflineAt ?? null;
+        const onlineForSec = st?.onlineForSec ?? null;
+        const lastSessionSec = st?.lastSessionSec ?? null;
+
+        return {
+          id: u.id,
+          userId: u.id,
+          phone: u.phone,
+          avatarUrl: u.avatarUrl,
+          isActive: u.isActive,
+
+          firstName: p?.firstName ?? '',
+          lastName: p?.lastName ?? '',
+          iin: p?.iin ?? '',
+
+          addressText: p?.addressText ?? null,
+          comment: p?.comment ?? null,
+
+          blockedAt: p?.blockedAt ?? null,
+          blockReason: p?.blockReason ?? null,
+
+          isOnline: p?.isOnline ?? false,
+          personalFeeOverride: p?.personalFeeOverride ?? null,
+          payoutBonusAdd: p?.payoutBonusAdd ?? null,
+
+          courierCommissionPctOverride: p?.courierCommissionPctOverride ?? null, // ✅
+
+          lastSeenAt: p?.lastSeenAt ?? null,
+          lastActiveAt: p?.lastActiveAt ?? null,
+          lastAssignedAt: p?.lastAssignedAt ?? null,
+
+          lastOnlineAt: lastOnlineAt ? lastOnlineAt.toISOString() : null,
+          lastOfflineAt: lastOfflineAt ? lastOfflineAt.toISOString() : null,
+          onlineForSec: (p?.isOnline ?? false) ? onlineForSec : null,
+          lastSessionSec: lastSessionSec,
+          seenAgoSec: diffSec(new Date(), lastSeenAt),
+          activeAgoSec: diffSec(new Date(), lastActiveAt),
+          assignedAgoSec: diffSec(new Date(), lastAssignedAt),
+        };
+      });
+
+    return { total, page, limit, items };
   }
 
-  async getOne(user: JwtUser, courierUserId: string) {
+  // =========================
+  // ✅ CREATE COURIER (admin)
+  // =========================
+  async createCourier(user: JwtUser, dto: any) {
+    this.ensureAdmin(user);
+
+    const phone = String(dto.phone || '').trim();
+    const password = String(dto.password || '').trim();
+
+    if (!phone) throw new BadRequestException('phone is required');
+    if (password.length < 4) throw new BadRequestException('password too short');
+
+    const firstName = String(dto.firstName || '').trim();
+    const lastName = String(dto.lastName || '').trim();
+    const iin = String(dto.iin || '').trim();
+
+    if (!firstName) throw new BadRequestException('firstName is required');
+    if (!lastName) throw new BadRequestException('lastName is required');
+    if (!iin) throw new BadRequestException('iin is required');
+
+    const exists = await this.prisma.user.findUnique({
+      where: { phone },
+      select: { id: true },
+    });
+    if (exists) throw new BadRequestException('phone already exists');
+
+    const hash = await bcrypt.hash(password, 10);
+
+    const created = await this.prisma.user.create({
+      data: {
+        role: 'COURIER',
+        phone,
+        passwordHash: hash,
+        isActive: true,
+        firstName,
+        lastName,
+        courierProfile: {
+          create: {
+            firstName,
+            lastName,
+            iin,
+            isOnline: false,
+            lastSeenAt: new Date(),
+            lastActiveAt: null,
+            lastAssignedAt: null,
+            blockedAt: null,
+            blockReason: null,
+            personalFeeOverride: null,
+            payoutBonusAdd: null,
+            addressText: null,
+            comment: null,
+            courierCommissionPctOverride: null,
+          },
+        },
+      } as any,
+      select: { id: true },
+    });
+
+    return { id: created.id };
+  }
+
+  // =========================
+  // ✅ ADMIN GET BY ID
+  // =========================
+  async getCourierAdminById(user: JwtUser, courierUserId: string) {
     this.ensureAdmin(user);
 
     const u = await this.prisma.user.findUnique({
@@ -106,22 +576,26 @@ export class CouriersService {
         id: true,
         phone: true,
         isActive: true,
-        createdAt: true,
+        avatarUrl: true,
         courierProfile: {
           select: {
+            userId: true,
             firstName: true,
             lastName: true,
             iin: true,
+            addressText: true,
+            comment: true,
+            blockedAt: true,
+            blockReason: true,
             isOnline: true,
+            personalFeeOverride: true,
+            payoutBonusAdd: true,
+            courierCommissionPctOverride: true,
             lastSeenAt: true,
             lastActiveAt: true,
             lastAssignedAt: true,
-            personalFeeOverride: true,
-            notes: {
-              orderBy: { createdAt: 'desc' },
-              take: 20,
-              select: { id: true, text: true, createdAt: true },
-            },
+            createdAt: true,
+            updatedAt: true,
           },
         },
       },
@@ -129,146 +603,222 @@ export class CouriersService {
 
     if (!u || !u.courierProfile) throw new NotFoundException('Courier not found');
 
-    const now = new Date();
-    const activeTariff = await this.prisma.courierTariff.findFirst({
+    const activeOrder = await this.prisma.order.findFirst({
       where: {
-        isActive: true,
-        startsAt: { lte: now },
-        OR: [{ endsAt: null }, { endsAt: { gte: now } }],
+        courierId: courierUserId,
+        status: {
+          in: [
+            OrderStatus.ACCEPTED,
+            OrderStatus.COOKING,
+            OrderStatus.READY,
+            OrderStatus.ON_THE_WAY,
+          ],
+        },
       },
-      orderBy: { startsAt: 'desc' },
-      select: { fee: true, startsAt: true, endsAt: true },
+      orderBy: { createdAt: 'desc' },
+      select: {
+        id: true,
+        status: true,
+        total: true,
+        createdAt: true,
+        assignedAt: true,
+        phone: true,
+        addressId: true,
+        restaurant: { select: { id: true, nameRu: true } },
+      },
     });
+
+    const activeTariff = await this.getActiveTariffPublic(user);
 
     return {
       id: u.id,
       userId: u.id,
       phone: u.phone,
       isActive: u.isActive,
-      createdAt: u.createdAt,
-      ...u.courierProfile,
+      avatarUrl: u.avatarUrl,
+
+      firstName: u.courierProfile.firstName ?? '',
+      lastName: u.courierProfile.lastName ?? '',
+      iin: u.courierProfile.iin ?? '',
+
+      addressText: u.courierProfile.addressText ?? null,
+      comment: u.courierProfile.comment ?? null,
+
+      blockedAt: u.courierProfile.blockedAt ?? null,
+      blockReason: u.courierProfile.blockReason ?? null,
+
+      isOnline: u.courierProfile.isOnline ?? false,
+      personalFeeOverride: u.courierProfile.personalFeeOverride ?? null,
+      payoutBonusAdd: u.courierProfile.payoutBonusAdd ?? null,
+      courierCommissionPctOverride: u.courierProfile.courierCommissionPctOverride ?? null,
+
+      lastSeenAt: u.courierProfile.lastSeenAt ?? null,
+      lastActiveAt: u.courierProfile.lastActiveAt ?? null,
+      lastAssignedAt: u.courierProfile.lastAssignedAt ?? null,
+
+      activeOrders: activeOrder ? [activeOrder] : [],
       activeTariff,
     };
   }
 
-  async create(
-    user: JwtUser,
-    dto: { phone: string; password: string; firstName: string; lastName: string; iin: string },
-  ) {
-    this.ensureAdmin(user);
+  // =========================
+  // ✅ UPLOAD AVATAR (me/admin)
+  // =========================
+  async uploadMyAvatar(user: JwtUser, file?: Express.Multer.File) {
+    if ((user.role ?? 'CLIENT') !== 'COURIER')
+      throw new ForbiddenException('Only courier');
+    if (!file) throw new BadRequestException('file is required');
 
-    if (!dto.phone || !dto.password) throw new BadRequestException('phone/password required');
-    if (!dto.firstName || !dto.lastName || !dto.iin)
-      throw new BadRequestException('firstName/lastName/iin required');
+    const url = `/${file.path.replace(/\\/g, '/')}`;
 
-    const exists = await this.prisma.user.findUnique({
-      where: { phone: dto.phone },
+    await this.prisma.user.update({
+      where: { id: user.id },
+      data: { avatarUrl: url },
       select: { id: true },
     });
-    if (exists) throw new BadRequestException('Phone already exists');
 
-    const hash = await bcrypt.hash(dto.password, 10);
-
-    const created = await this.prisma.user.create({
-      data: {
-        phone: dto.phone,
-        role: 'COURIER',
-        passwordHash: hash,
-        isActive: true,
-        courierProfile: {
-          create: {
-            firstName: dto.firstName,
-            lastName: dto.lastName,
-            iin: dto.iin,
-            isOnline: false,
-            lastSeenAt: null,
-            lastActiveAt: null,
-            lastAssignedAt: null,
-          },
-        },
-      },
-      select: {
-        id: true,
-        phone: true,
-        role: true,
-        isActive: true,
-        courierProfile: { select: { firstName: true, lastName: true, iin: true, isOnline: true } },
-      },
-    });
-
-    return created;
+    return { ok: true, avatarUrl: url };
   }
 
-  async setPassword(user: JwtUser, courierUserId: string, password: string) {
-    this.ensureAdmin(user);
-    if (!password) throw new BadRequestException('password required');
-
-    const u = await this.prisma.user.findUnique({
-      where: { id: courierUserId },
-      select: { id: true, role: true },
-    });
-    if (!u || u.role !== 'COURIER') throw new NotFoundException('Courier not found');
-
-    const hash = await bcrypt.hash(password, 10);
-
-    await this.prisma.user.update({
-      where: { id: courierUserId },
-      data: { passwordHash: hash },
-    });
-
-    return { ok: true };
-  }
-
-  async setActive(user: JwtUser, courierUserId: string, isActive: boolean) {
-    this.ensureAdmin(user);
-
-    const u = await this.prisma.user.findUnique({
-      where: { id: courierUserId },
-      select: { id: true, role: true },
-    });
-    if (!u || u.role !== 'COURIER') throw new NotFoundException('Courier not found');
-
-    await this.prisma.user.update({
-      where: { id: courierUserId },
-      data: { isActive },
-    });
-
-    return { ok: true, courierUserId, isActive };
-  }
-
-  async setOnline(
+  async uploadCourierAvatar(
     user: JwtUser,
     courierUserId: string,
-    isOnline: boolean,
-    meta?: { source?: string; reason?: string },
+    file?: Express.Multer.File,
+  ) {
+    this.ensureAdmin(user);
+    if (!file) throw new BadRequestException('file is required');
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const url = `/${file.path.replace(/\\/g, '/')}`;
+
+    await this.prisma.user.update({
+      where: { id: courierUserId },
+      data: { avatarUrl: url },
+      select: { id: true },
+    });
+
+    return { ok: true, avatarUrl: url };
+  }
+
+  // =========================
+  // ✅ UPDATE PROFILE (admin)
+  // =========================
+  async updateCourierProfile(
+    user: JwtUser,
+    courierUserId: string,
+    dto: UpdateCourierProfileDto,
   ) {
     this.ensureAdmin(user);
 
-    const c = await this.prisma.courierProfile.findUnique({
+    await this.getCourierOrThrow(courierUserId);
+
+    const data: any = {};
+
+    if (dto.firstName != null) data.firstName = String(dto.firstName).trim();
+    if (dto.lastName != null) data.lastName = String(dto.lastName).trim();
+    if (dto.iin != null) data.iin = String(dto.iin).trim();
+    if (dto.addressText !== undefined)
+      data.addressText = dto.addressText ? String(dto.addressText).trim() : null;
+    if (dto.comment !== undefined) data.comment = dto.comment ? String(dto.comment).trim() : null;
+
+    if ((dto as any).personalFeeOverride !== undefined) {
+      data.personalFeeOverride =
+        (dto as any).personalFeeOverride === null
+          ? null
+          : Math.max(0, Math.trunc(Number((dto as any).personalFeeOverride) || 0));
+    }
+
+    if ((dto as any).payoutBonusAdd !== undefined) {
+      data.payoutBonusAdd =
+        (dto as any).payoutBonusAdd === null
+          ? null
+          : Math.max(0, Math.trunc(Number((dto as any).payoutBonusAdd) || 0));
+    }
+
+    // поддержка нового поля в профиле, если DTO уже обновлён
+    if ((dto as any).courierCommissionPctOverride !== undefined) {
+      const v = (dto as any).courierCommissionPctOverride;
+      data.courierCommissionPctOverride =
+        v == null ? null : Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+    }
+
+    const updated = await this.prisma.courierProfile.update({
       where: { userId: courierUserId },
-      select: { userId: true, isOnline: true },
+      data,
+      select: { userId: true },
     });
-    if (!c) throw new NotFoundException('Courier not found');
 
-    const now = new Date();
+    return updated;
+  }
 
-    // 1) обновляем профиль
+  // =========================
+  // ✅ BLOCK/UNBLOCK (admin)
+  // =========================
+  async blockCourier(user: JwtUser, courierUserId: string, dto: BlockCourierDto) {
+    this.ensureAdmin(user);
+
+    const blocked = Boolean(dto?.blocked);
+    const reason = dto?.reason != null ? String(dto.reason).trim() : null;
+
+    await this.getCourierOrThrow(courierUserId);
+
+    await this.prisma.user.update({
+      where: { id: courierUserId },
+      data: { isActive: !blocked },
+      select: { id: true },
+    });
+
+    const updated = await this.prisma.courierProfile.update({
+      where: { userId: courierUserId },
+      data: {
+        blockedAt: blocked ? new Date() : null,
+        blockReason: blocked ? reason : null,
+      },
+      select: { userId: true, blockedAt: true, blockReason: true },
+    });
+
+    return updated;
+  }
+
+  // =========================
+  // ✅ ONLINE/OFFLINE
+  // =========================
+  async setCourierOnline(user: JwtUser, courierUserId: string, body: any) {
+    const role = user.role ?? 'CLIENT';
+
+    if (role === 'ADMIN') {
+      // ok
+    } else if (role === 'COURIER') {
+      if (user.id !== courierUserId) throw new ForbiddenException('Not your id');
+    } else {
+      throw new ForbiddenException('Forbidden');
+    }
+
+    const isOnline = Boolean(body?.isOnline);
+
+    await this.getCourierOrThrow(courierUserId);
+
     const updated = await this.prisma.courierProfile.update({
       where: { userId: courierUserId },
       data: {
         isOnline,
-        lastSeenAt: now,
-        lastActiveAt: now,
+        lastSeenAt: new Date(),
+        lastActiveAt: isOnline ? new Date() : undefined,
       },
-      select: { userId: true, isOnline: true, lastSeenAt: true, lastActiveAt: true },
+      select: {
+        userId: true,
+        isOnline: true,
+        lastSeenAt: true,
+        lastActiveAt: true,
+      },
     });
 
-    // 2) пишем событие для метрики "онлайн по времени"
-    //    (если статус не менялся — всё равно пишем, это полезно как heartbeat)
     await this.prisma.courierOnlineEvent.create({
       data: {
         courierUserId,
         isOnline,
+        source: String(body?.source || (role === 'ADMIN' ? 'admin' : 'courier')),
       },
       select: { id: true },
     });
@@ -276,72 +826,193 @@ export class CouriersService {
     return updated;
   }
 
-  async setPersonalFee(user: JwtUser, courierUserId: string, fee: number | null) {
+  // =========================
+  // ✅ ASSIGN/UNASSIGN ORDER (admin)
+  // =========================
+  async assignOrderToCourier(user: JwtUser, courierUserId: string, body: any) {
     this.ensureAdmin(user);
 
-    const c = await this.prisma.courierProfile.findUnique({
+    const orderId = String(body?.orderId || '').trim();
+    if (!orderId) throw new BadRequestException('orderId is required');
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, status: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        courierId: courierUserId,
+        assignedAt: new Date(),
+      },
+      select: { id: true },
+    });
+
+    await this.prisma.courierProfile.update({
       where: { userId: courierUserId },
+      data: {
+        lastAssignedAt: new Date(),
+      },
       select: { userId: true },
     });
-    if (!c) throw new NotFoundException('Courier not found');
 
-    const val = fee == null ? null : Math.max(0, Math.round(Number(fee)));
-    return this.prisma.courierProfile.update({
-      where: { userId: courierUserId },
-      data: { personalFeeOverride: val },
-      select: { userId: true, personalFeeOverride: true },
-    });
+    return { ok: true };
   }
 
-  async addNote(user: JwtUser, courierUserId: string, text: string) {
+  async unassignOrderFromCourier(user: JwtUser, courierUserId: string, body: any) {
     this.ensureAdmin(user);
-    if (!text || !text.trim()) throw new BadRequestException('text required');
 
+    const orderId = String(body?.orderId || '').trim();
+    if (!orderId) throw new BadRequestException('orderId is required');
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: { id: true, courierId: true },
+    });
+    if (!order) throw new NotFoundException('Order not found');
+
+    await this.prisma.order.update({
+      where: { id: orderId },
+      data: {
+        courierId: null,
+      },
+      select: { id: true },
+    });
+
+    return { ok: true };
+  }
+
+  // =========================
+  // ✅ HELPERS
+  // =========================
+  async getCourierOrThrow(courierUserId: string) {
     const c = await this.prisma.courierProfile.findUnique({
       where: { userId: courierUserId },
       select: { userId: true },
     });
     if (!c) throw new NotFoundException('Courier not found');
+    return c;
+  }
 
-    return this.prisma.courierNote.create({
+  // =========================
+  // ✅ FINANCE (admin)
+  // =========================
+  async getCourierFinanceSummary(user: JwtUser, courierUserId: string, opts: any) {
+    this.ensureAdmin(user);
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const from = opts?.from ? safeDate(opts.from) : null;
+    const to = opts?.to ? safeDate(opts.to) : null;
+
+    const where: any = { courierUserId };
+    if (from) where.createdAt = { ...(where.createdAt || {}), gte: from };
+    if (to) where.createdAt = { ...(where.createdAt || {}), lte: to };
+
+    const rows = await this.prisma.courierLedgerEntry.findMany({
+      where,
+      select: { id: true, type: true, amount: true },
+      take: 5000,
+    });
+
+    // "Доход" курьера — всё, что увеличивает баланс курьера (кроме PAYOUT, который уменьшает)
+    const incomeTypes: LedgerType[] = [
+      LedgerType.ORDER_PAYOUT,
+      LedgerType.BONUS,
+      LedgerType.MANUAL_ADJUSTMENT,
+      // PENALTY и SERVICE_COMMISSION обычно уменьшают, поэтому не включаем
+    ];
+
+    let totalIncome = 0;
+    let totalPayout = 0;
+
+    for (const r of rows || []) {
+      if (incomeTypes.includes(r.type)) totalIncome += Number(r.amount || 0);
+      if (r.type === LedgerType.PAYOUT) totalPayout += Number(r.amount || 0);
+    }
+
+    return {
+      totalIncome,
+      totalPayout,
+      balance: totalIncome - totalPayout,
+    };
+  }
+
+  async getCourierFinanceLedger(user: JwtUser, courierUserId: string, opts: any) {
+    this.ensureAdmin(user);
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const page = Math.max(1, Math.trunc(Number(opts?.page) || 1));
+    const limit = Math.max(1, Math.min(200, Math.trunc(Number(opts?.limit) || 50)));
+    const skip = (page - 1) * limit;
+
+    const from = opts?.from ? safeDate(opts.from) : null;
+    const to = opts?.to ? safeDate(opts.to) : null;
+
+    const where: any = { courierUserId };
+    if (from) where.createdAt = { ...(where.createdAt || {}), gte: from };
+    if (to) where.createdAt = { ...(where.createdAt || {}), lte: to };
+
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.courierLedgerEntry.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.courierLedgerEntry.count({ where }),
+    ]);
+
+    return { items, total, page, limit };
+  }
+
+  async createCourierPayout(user: JwtUser, courierUserId: string, body: any) {
+    this.ensureAdmin(user);
+
+    await this.getCourierOrThrow(courierUserId);
+
+    const amount = Number(body?.amount);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      throw new BadRequestException('amount must be > 0');
+    }
+
+    const comment = body?.comment != null ? String(body.comment).trim() : null;
+
+    await this.prisma.courierLedgerEntry.create({
       data: {
         courierUserId,
-        authorUserId: user.id,
-        text: text.trim(),
+        type: LedgerType.PAYOUT,
+        amount: Math.round(amount),
+        comment,
       },
-      select: { id: true, text: true, createdAt: true },
+      select: { id: true },
     });
+
+    return { ok: true };
   }
 
-  async getActiveTariff(user: JwtUser) {
-    this.ensureAdmin(user);
-    const now = new Date();
-    const t = await this.prisma.courierTariff.findFirst({
-      where: { isActive: true, startsAt: { lte: now }, OR: [{ endsAt: null }, { endsAt: { gte: now } }] },
-      orderBy: { startsAt: 'desc' },
-    });
-    return { active: t ?? null };
-  }
-
-  async setTariff(user: JwtUser, dto: { fee: number; startsAt?: string; endsAt?: string | null }) {
+  async setCourierCommissionOverride(user: JwtUser, courierUserId: string, body: any) {
     this.ensureAdmin(user);
 
-    const fee = Math.max(0, Math.round(Number(dto.fee)));
-    if (!fee) throw new BadRequestException('fee must be > 0');
+    await this.getCourierOrThrow(courierUserId);
 
-    const startsAt = dto.startsAt ? new Date(dto.startsAt) : new Date();
-    const endsAt = dto.endsAt ? new Date(dto.endsAt) : null;
+    // API может присылать commissionPctOverride (как у тебя в контроллере)
+    const v = body?.commissionPctOverride ?? body?.courierCommissionPctOverride;
+    const pct = v == null ? null : Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
 
-    await this.prisma.courierTariff.updateMany({
-      where: { isActive: true, endsAt: null },
-      data: { endsAt: startsAt },
+    const updated = await this.prisma.courierProfile.update({
+      where: { userId: courierUserId },
+      data: { courierCommissionPctOverride: pct },
+      select: { userId: true, courierCommissionPctOverride: true },
     });
 
-    const created = await this.prisma.courierTariff.create({
-      data: { fee, startsAt, endsAt, isActive: true },
-      select: { id: true, fee: true, startsAt: true, endsAt: true, isActive: true },
-    });
-
-    return created;
+    return updated;
   }
 }

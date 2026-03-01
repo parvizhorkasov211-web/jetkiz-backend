@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   ForbiddenException,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { OrdersService } from './orders.service';
 import { CreateOrderDto } from './dto/create-order.dto';
@@ -35,6 +36,20 @@ export class OrdersController {
   @Post()
   create(@CurrentUser() user: JwtUser, @Body() dto: CreateOrderDto) {
     return this.orders.createOrder(user.id, dto);
+  }
+
+  // Поиск заказа по номеру (цифрами)
+  // ADMIN: любой заказ
+  // CLIENT: только свой
+  @UseGuards(JwtAuthGuard)
+  @Get('by-number/:number')
+  async getByNumber(
+    @CurrentUser() user: JwtUser,
+    @Param('number', ParseIntPipe) number: number,
+  ) {
+    const role = user.role ?? 'CLIENT';
+    if (role === 'ADMIN') return this.orders.getAdminOrderByNumber(number);
+    return this.orders.getOrderByNumber(user.id, number);
   }
 
   @UseGuards(JwtAuthGuard)
@@ -73,6 +88,43 @@ export class OrdersController {
     });
   }
 
+  // ============================================================
+  // FINANCE CONFIG (admin)
+  // ============================================================
+  @UseGuards(JwtAuthGuard)
+  @Get('finance/config')
+  getFinanceConfig(@CurrentUser() user: JwtUser) {
+    return this.orders.getFinanceConfig(user);
+  }
+
+  @UseGuards(JwtAuthGuard)
+  @Patch('finance/config')
+  updateFinanceConfig(
+    @CurrentUser() user: JwtUser,
+    @Body()
+    body: {
+      clientDeliveryFeeDefault?: number;
+      clientDeliveryFeeWeather?: number;
+      courierPayoutDefault?: number;
+      courierPayoutWeather?: number;
+      weatherEnabled?: boolean;
+    },
+  ) {
+    return this.orders.updateFinanceConfig(user, body);
+  }
+
+  // MANUAL override: client delivery fee for конкретного заказа
+  @UseGuards(JwtAuthGuard)
+  @Patch(':id/manual-delivery-fee')
+  setManualDeliveryFee(
+    @CurrentUser() user: JwtUser,
+    @Param('id') id: string,
+    @Body('deliveryFee') deliveryFee: number,
+  ) {
+    return this.orders.setManualDeliveryFee(user, id, deliveryFee);
+  }
+
+  // UUID или number — сервис сам разрулит
   @UseGuards(JwtAuthGuard)
   @Get(':id')
   async getOne(@CurrentUser() user: JwtUser, @Param('id') id: string) {

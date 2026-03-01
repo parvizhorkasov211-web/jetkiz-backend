@@ -4,19 +4,34 @@ import {
   AccordionMenu,
   AccordionMenuGroup,
   AccordionMenuItem,
-} from '@/components/ui/accordion-menu';
-import { Badge } from '@/components/ui/badge';
-import { usePathname } from 'next/navigation';
-import Link from 'next/link';
+} from "@/components/ui/accordion-menu";
+import { Badge } from "@/components/ui/badge";
+import { usePathname } from "next/navigation";
+import Link from "next/link";
+
+const RU: Record<string, string> = {
+  Network: "Сеть",
+  Account: "Аккаунт",
+  Updates: "Обновления",
+  Settings: "Настройки",
+  "Create a community": "Создать сообщество",
+  "Designers Hub": "Дизайнеры",
+  "React Js": "React",
+  "Node Js": "Node.js",
+  Documentation: "Документация",
+  Support: "Поддержка",
+};
+
+const t = (s?: string) => (s ? (RU[s] ?? s) : "");
 
 export function SidebarPrimaryMenu() {
   const pathname = usePathname();
 
-  // Memoize matchPath to prevent unnecessary re-renders
   const matchPath = useCallback(
     (path: string): boolean =>
-      path === pathname || (path.length > 1 && pathname.startsWith(path) && path !== '/layout-20'),
-    [pathname],
+      path === pathname ||
+      (path.length > 1 && pathname.startsWith(path) && path !== "/layout-20"),
+    [pathname]
   );
 
   return (
@@ -26,28 +41,29 @@ export function SidebarPrimaryMenu() {
       type="multiple"
       className="space-y-7.5 px-2.5 pt-1"
       classNames={{
-        label: 'text-xs font-normal text-muted-foreground mb-2',
-        item: 'h-8.5 px-2.5 text-sm font-normal text-foreground hover:text-white border border-transparent hover:bg-zinc-800/80 data-[selected=true]:bg-zinc-800/60 data-[selected=true]:text-foreground data-[selected=true]:border-zinc-700/60 [&[data-selected=true]_svg]:opacity-100',
-        group: '',
+        label: "text-xs font-normal text-muted-foreground mb-2",
+        item:
+          "h-8.5 px-2.5 text-sm font-normal text-foreground hover:text-white border border-transparent hover:bg-zinc-800/80 data-[selected=true]:bg-zinc-800/60 data-[selected=true]:text-foreground data-[selected=true]:border-zinc-700/60 [&[data-selected=true]_svg]:opacity-100",
+        group: "",
       }}
     >
-      {MENU_SIDEBAR_MAIN.map((item, index) => {
-        return (
-          <AccordionMenuGroup key={index}>
-            {item.children?.map((child, index) => {
-              return (
-                <AccordionMenuItem key={index} value={child.path || '#'}>
-                  <Link href={child.path || '#'}>
-                    {child.icon && <child.icon />}
-                    <span>{child.title}</span>
-                    {child.badge == 'Beta' && <Badge size="sm" variant="destructive" appearance="light">{child.badge}</Badge>}
-                  </Link>
-                </AccordionMenuItem>
-              )
-            })}
-          </AccordionMenuGroup>
-        )
-      })}
+      {MENU_SIDEBAR_MAIN.map((item, index) => (
+        <AccordionMenuGroup key={index}>
+          {item.children?.map((child, index) => (
+            <AccordionMenuItem key={index} value={child.path || "#"}>
+              <Link href={child.path || "#"}>
+                {child.icon && <child.icon />}
+                <span>{t(child.title)}</span>
+                {child.badge === "Beta" && (
+                  <Badge size="sm" variant="destructive" appearance="light">
+                    {child.badge}
+                  </Badge>
+                )}
+              </Link>
+            </AccordionMenuItem>
+          ))}
+        </AccordionMenuGroup>
+      ))}
     </AccordionMenu>
   );
 }

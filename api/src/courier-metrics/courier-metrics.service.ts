@@ -1,9 +1,9 @@
-import { ForbiddenException, Injectable } from '@nestjs/common';
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
 type JwtUser = { id: string; role?: string };
 
-// ======= ДОБАВЛЕНО: helpers для online-timeline (по событиям CourierOnlineEvent) =======
+// ======= helpers для online-timeline (по событиям CourierOnlineEvent) =======
 function floorToHour(d: Date) {
   const x = new Date(d);
   x.setMinutes(0, 0, 0);
@@ -22,6 +22,25 @@ function addDays(d: Date, days: number) {
 }
 // ==============================================================================
 
+function startOfMonth(d: Date) {
+  const x = new Date(d);
+  x.setDate(1);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function startOfYear(d: Date) {
+  const x = new Date(d);
+  x.setMonth(0, 1);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+function safeDate(v?: string | null) {
+  if (!v) return null;
+  const d = new Date(v);
+  if (!Number.isFinite(d.getTime())) return null;
+  return d;
+}
+
 @Injectable()
 export class CourierMetricsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -30,6 +49,180 @@ export class CourierMetricsService {
     if ((u.role ?? 'CLIENT') !== 'ADMIN') throw new ForbiddenException('Only admin');
   }
 
+  /**
+   * ✅ Получаем тот же набор курьеров, что в /couriers (роль COURIER + isActive=true)
+   */
+  private async getCourierUserIdsForMetrics(): Promise<string[]> {
+    const users = await this.prisma.user.findMany({
+      where: {
+        role: 'COURIER' as any,
+        isActive: true,
+      } as any,
+      select: { id: true },
+    });
+
+    return users.map((u) => u.id);
+  }
+
+  /**
+   * ✅ Completed Orders Count (lifetime или по диапазону)
+   * /couriers/metrics/completed-count?courierUserId=...&range=day|month|year
+   * /couriers/metrics/completed-count?courierUserId=...&from=YYYY-MM-DD&to=YYYY-MM-DD
+   */
+  async completedCount(
+    user: JwtUser,
+    courierUserId: string,
+    opts?: { range?: 'day' | 'month' | 'year'; from?: string; to?: string },
+  ) {
+    this.ensureAdmin(user);
+
+    if (!courierUserId) throw new BadRequestException('courierUserId is required');
+
+    const allowedIds = await this.getCourierUserIdsForMetrics();
+    if (!allowedIds.includes(courierUserId)) throw new NotFoundException('Courier not found');
+
+    const now = new Date();
+
+    let fromDate: Date | null = null;
+    let toDate: Date | null = null;
+
+    const range = (opts?.range ?? '') as any;
+
+    const parsedFrom = safeDate(opts?.from ?? null);
+    const parsedTo = safeDate(opts?.to ?? null);
+
+    if (parsedFrom || parsedTo) {
+      // custom period by from/to
+      fromDate = parsedFrom;
+      toDate = parsedTo ?? now;
+
+      if (!fromDate) throw new BadRequestException('from is required when to is set');
+      if (!Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime())) {
+        throw new BadRequestException('Invalid from/to date');
+      }
+      if (fromDate.getTime() > toDate.getTime()) {
+        throw new BadRequestException('from must be <= to');
+      }
+    } else if (range === 'day') {
+      fromDate = floorToDay(now);
+      toDate = now;
+    } else if (range === 'month') {
+      fromDate = startOfMonth(now);
+      toDate = now;
+    } else if (range === 'year') {
+      fromDate = startOfYear(now);
+      toDate = now;
+    } else {
+      // lifetime: no deliveredAt filter
+      fromDate = null;
+      toDate = null;
+    }
+
+    const where: any = {
+      courierId: courierUserId,
+      status: 'DELIVERED' as any,
+    };
+
+    if (fromDate || toDate) {
+      where.deliveredAt = { not: null };
+      if (fromDate) where.deliveredAt.gte = fromDate;
+      if (toDate) where.deliveredAt.lte = toDate;
+    }
+
+    const totalCompleted = await this.prisma.order.count({ where });
+
+    return {
+      courierUserId,
+      range: range || 'lifetime',
+      period:
+        fromDate || toDate
+          ? {
+              from: (fromDate ?? null)?.toISOString?.() ?? null,
+              to: (toDate ?? null)?.toISOString?.() ?? null,
+            }
+          : null,
+      totalCompleted,
+      generatedAt: now.toISOString(),
+    };
+  }
+
+  /**
+   * ✅ NEW: On-Time Delivery Rate (по SLA минутам)
+   * Логика: берём доставленные за период; on-time если deliveredAt <= assignedAt + slaMin
+   * /couriers/metrics/on-time-rate?courierUserId=...&from=...&to=...&slaMin=45
+   */
+  async onTimeRate(
+    user: JwtUser,
+    courierUserId: string,
+    from?: string,
+    to?: string,
+    slaMin?: number,
+  ) {
+    this.ensureAdmin(user);
+
+    if (!courierUserId) throw new BadRequestException('courierUserId is required');
+
+    const allowedIds = await this.getCourierUserIdsForMetrics();
+    if (!allowedIds.includes(courierUserId)) throw new NotFoundException('Courier not found');
+
+    const now = new Date();
+    const toDate = to ? new Date(to) : now;
+    const fromDate = from ? new Date(from) : new Date(now.getTime() - 30 * 86400_000);
+
+    if (!Number.isFinite(fromDate.getTime()) || !Number.isFinite(toDate.getTime())) {
+      throw new BadRequestException('Invalid from/to date');
+    }
+
+    const sla = Math.min(Math.max(Number(slaMin ?? 45), 1), 24 * 60); // 1..1440
+
+    // Берём доставленные за период (по deliveredAt)
+    // NOTE: promisedAt НЕ используем — его нет в схеме.
+    const delivered = await this.prisma.order.findMany({
+      where: {
+        courierId: courierUserId,
+        status: 'DELIVERED' as any,
+        deliveredAt: {
+          not: null,
+          gte: fromDate,
+          lte: toDate,
+        },
+      } as any,
+      select: {
+        id: true,
+        assignedAt: true,
+        deliveredAt: true,
+      },
+    });
+
+    const totalDelivered = delivered.length;
+
+    // on-time: deliveredAt <= assignedAt + sla
+    const slaMs = sla * 60_000;
+
+    let onTimeDelivered = 0;
+    for (const o of delivered) {
+      const a = o.assignedAt?.getTime();
+      const d = o.deliveredAt?.getTime();
+      if (!a || !d) continue;
+      if (d <= a + slaMs) onTimeDelivered++;
+    }
+
+    const ratePct = totalDelivered > 0 ? Math.round((onTimeDelivered / totalDelivered) * 100) : 0;
+
+    return {
+      courierUserId,
+      period: { from: fromDate.toISOString(), to: toDate.toISOString() },
+      slaMin: sla,
+      totalDelivered,
+      onTimeDelivered,
+      ratePct,
+      generatedAt: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * ✅ Summary + items (расширенный realtime)
+   */
   async realtime(user: JwtUser) {
     this.ensureAdmin(user);
 
@@ -37,7 +230,12 @@ export class CourierMetricsService {
     const todayFrom = new Date(now);
     todayFrom.setHours(0, 0, 0, 0);
 
+    const allowedIds = await this.getCourierUserIdsForMetrics();
+
     const couriers = await this.prisma.courierProfile.findMany({
+      where: {
+        userId: { in: allowedIds },
+      },
       select: {
         userId: true,
         firstName: true,
@@ -65,7 +263,7 @@ export class CourierMetricsService {
       by: ['courierId'],
       where: {
         courierId: { in: ids },
-        status: 'DELIVERED',
+        status: 'DELIVERED' as any,
         deliveredAt: { gte: todayFrom },
       },
       _count: { _all: true },
@@ -89,7 +287,6 @@ export class CourierMetricsService {
       });
     }
 
-    // sleepers: not active 7 days (config later)
     const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
 
     const items = couriers.map((c) => {
@@ -121,19 +318,125 @@ export class CourierMetricsService {
   }
 
   /**
-   * ✅ Онлайн по времени — БЕЗ миграций.
-   * Используем существующие поля CourierProfile:
-   * - lastSeenAt   -> "курьер был виден/онлайн (пинг) в это время"
-   * - lastActiveAt -> "курьер реально активничал (заказ/движение) в это время"
-   *
-   * Важно: это НЕ идеальная "история включения/выключения", но уже даёт картину:
-   * - когда обычно много курьеров на линии
-   * - когда провалы (нужно стимулировать/планировать смены)
+   * ✅ Статусы для диаграммы (3 цвета)
+   * GET /couriers/metrics/status-summary
    */
-  async onlineSeries(
-    user: JwtUser,
-    opts: { range?: 'day' | 'week' | 'month'; from?: string; to?: string },
-  ) {
+  async statusSummary(user: JwtUser) {
+    this.ensureAdmin(user);
+
+    const allowedIds = await this.getCourierUserIdsForMetrics();
+
+    const couriers = await this.prisma.courierProfile.findMany({
+      where: {
+        userId: { in: allowedIds },
+      },
+      select: { userId: true, isOnline: true, lastActiveAt: true },
+    });
+
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 86400000);
+
+    const total = couriers.length;
+
+    const onlineIds = couriers.filter((c) => !!c.isOnline).map((c) => c.userId);
+    const offline = couriers.filter((c) => !c.isOnline).length;
+
+    let busy = 0;
+    if (onlineIds.length > 0) {
+      const activeOrdersByCourier = await this.prisma.order.groupBy({
+        by: ['courierId'],
+        where: {
+          courierId: { in: onlineIds },
+          status: { notIn: ['DELIVERED', 'CANCELED'] as any },
+        },
+        _count: { _all: true },
+      });
+
+      busy = activeOrdersByCourier.filter((r) => r.courierId && r._count._all > 0).length;
+    }
+
+    const onlineTotal = onlineIds.length;
+
+    const safeBusy = Math.min(busy, onlineTotal);
+    const safeOnline = Math.max(onlineTotal - safeBusy, 0);
+    const safeOffline = Math.max(total - safeOnline - safeBusy, 0);
+
+    return {
+      total,
+      online: safeOnline,
+      offline: safeOffline,
+      busy: safeBusy,
+      sleeping: couriers.filter((c) => !c.lastActiveAt || c.lastActiveAt < sevenDaysAgo).length,
+      generatedAt: now.toISOString(),
+    };
+  }
+
+  /**
+   * ✅ Список по вкладкам (ONLINE/OFFLINE/BUSY)
+   */
+  async statusList(user: JwtUser, opts: { tab?: 'ONLINE' | 'OFFLINE' | 'BUSY'; limit?: number }) {
+    this.ensureAdmin(user);
+
+    const tab = (opts.tab ?? 'ONLINE') as 'ONLINE' | 'OFFLINE' | 'BUSY';
+    const limit = Math.min(Math.max(Number(opts.limit ?? 7), 1), 50);
+
+    const allowedIds = await this.getCourierUserIdsForMetrics();
+
+    const couriers = await this.prisma.courierProfile.findMany({
+      where: {
+        userId: { in: allowedIds },
+      },
+      select: {
+        userId: true,
+        firstName: true,
+        lastName: true,
+        isOnline: true,
+        lastSeenAt: true,
+        lastActiveAt: true,
+      },
+      orderBy: [{ isOnline: 'desc' }, { updatedAt: 'desc' }],
+    });
+
+    const onlineIds = couriers.filter((c) => !!c.isOnline).map((c) => c.userId);
+
+    const busySet = new Set<string>();
+    if (onlineIds.length > 0) {
+      const activeOrdersByCourier = await this.prisma.order.groupBy({
+        by: ['courierId'],
+        where: {
+          courierId: { in: onlineIds },
+          status: { notIn: ['DELIVERED', 'CANCELED'] as any },
+        },
+        _count: { _all: true },
+      });
+
+      for (const row of activeOrdersByCourier) {
+        if (row.courierId && row._count._all > 0) busySet.add(row.courierId);
+      }
+    }
+
+    const pickStatus = (c: { userId: string; isOnline: boolean }) => {
+      if (!c.isOnline) return 'OFFLINE';
+      if (busySet.has(c.userId)) return 'BUSY';
+      return 'ONLINE';
+    };
+
+    const items = couriers
+      .map((c) => ({
+        courierUserId: c.userId,
+        name: `${c.firstName ?? ''} ${c.lastName ?? ''}`.trim() || '—',
+        tabStatus: pickStatus({ userId: c.userId, isOnline: !!c.isOnline }) as 'ONLINE' | 'OFFLINE' | 'BUSY',
+        isOnline: !!c.isOnline,
+        lastSeenAt: c.lastSeenAt ? c.lastSeenAt.toISOString() : null,
+        lastActiveAt: c.lastActiveAt ? c.lastActiveAt.toISOString() : null,
+      }))
+      .filter((x) => x.tabStatus === tab)
+      .slice(0, limit);
+
+    return { tab, limit, items, generatedAt: new Date().toISOString() };
+  }
+
+  async onlineSeries(user: JwtUser, opts: { range?: 'day' | 'week' | 'month'; from?: string; to?: string }) {
     this.ensureAdmin(user);
 
     const range = (opts.range ?? 'day') as 'day' | 'week' | 'month';
@@ -147,10 +450,8 @@ export class CourierMetricsService {
       fromDate = new Date(toDate.getTime() - days * 86400000);
     }
 
-    // bucket: hour for day, day for week/month
     const trunc: 'hour' | 'day' = range === 'day' ? 'hour' : 'day';
 
-    // seen (lastSeenAt)
     const seenRows = (await this.prisma.$queryRawUnsafe<any[]>(
       `
       SELECT
@@ -167,7 +468,6 @@ export class CourierMetricsService {
       toDate,
     )) as any[];
 
-    // active (lastActiveAt)
     const activeRows = (await this.prisma.$queryRawUnsafe<any[]>(
       `
       SELECT
@@ -184,7 +484,6 @@ export class CourierMetricsService {
       toDate,
     )) as any[];
 
-    // merge buckets
     const map = new Map<string, { seenUnique: number; activeUnique: number }>();
 
     for (const r of seenRows) {
@@ -199,7 +498,7 @@ export class CourierMetricsService {
     }
 
     const series = Array.from(map.entries())
-      .sort((a, b) => new Date(a[0]).getTime() - new Date(a[0]).getTime())
+      .sort((a, b) => new Date(a[0]).getTime() - new Date(b[0]).getTime())
       .map(([bucket, v]) => ({
         bucket,
         seenUnique: v.seenUnique,
@@ -214,122 +513,96 @@ export class CourierMetricsService {
     };
   }
 
-  // ===================== ДОБАВЛЕНО: идеальная метрика "онлайн по времени" по событиям =====================
-  /**
-   * ✅ Метрика: "Онлайн курьеры по времени" (по CourierOnlineEvent)
-   *
-   * /couriers/metrics/online-timeline?from=...&to=...&bucket=hour|day
-   *
-   * Возвращает:
-   * points: [{ ts, online }]
-   *
-   * Работает так:
-   * - берём текущее состояние из CourierProfile как базу
-   * - на момент start пересчитываем состояние последними событиями ДО start
-   * - дальше по событиям меняем onlineCount и пишем значения по бакетам
-   *
-   * Важно: В модели CourierOnlineEvent время хранится в поле `at`, не `createdAt`.
-   */
- async onlineTimeline(
-  user: JwtUser,
-  opts: { from?: string; to?: string; bucket?: 'hour' | 'day' },
-) {
-  this.ensureAdmin(user);
+  async onlineTimeline(user: JwtUser, opts: { from?: string; to?: string; bucket?: 'hour' | 'day' }) {
+    this.ensureAdmin(user);
 
-  const now = new Date();
-  const toDate = opts.to ? new Date(opts.to) : now;
-  const fromDate = opts.from ? new Date(opts.from) : new Date(now.getTime() - 7 * 86400000);
+    const now = new Date();
+    const toDate = opts.to ? new Date(opts.to) : now;
+    const fromDate = opts.from ? new Date(opts.from) : new Date(now.getTime() - 7 * 86400000);
 
-  const bucket: 'hour' | 'day' = opts.bucket === 'day' ? 'day' : 'hour';
+    const bucket: 'hour' | 'day' = opts.bucket === 'day' ? 'day' : 'hour';
 
-  const start = bucket === 'day' ? floorToDay(fromDate) : floorToHour(fromDate);
-  const end = bucket === 'day' ? floorToDay(toDate) : floorToHour(toDate);
+    const start = bucket === 'day' ? floorToDay(fromDate) : floorToHour(fromDate);
+    const end = bucket === 'day' ? floorToDay(toDate) : floorToHour(toDate);
 
-  // 1) init state from profiles
-  const profiles = await this.prisma.courierProfile.findMany({
-    select: { userId: true, isOnline: true },
-  });
-  const ids = profiles.map((p) => p.userId);
+    const allowedIds = await this.getCourierUserIdsForMetrics();
 
-  const state = new Map<string, boolean>();
-  for (const p of profiles) state.set(p.userId, !!p.isOnline);
+    const profiles = await this.prisma.courierProfile.findMany({
+      where: {
+        userId: { in: allowedIds },
+      },
+      select: { userId: true, isOnline: true },
+    });
+    const ids = profiles.map((p) => p.userId);
 
-  // 2) apply last event before start (per courier)
-  // ВАЖНО: поле времени в CourierOnlineEvent = `at`
-  const lastEvents = await this.prisma.courierOnlineEvent.findMany({
-    where: {
-      courierUserId: { in: ids },
-      at: { lt: start },
-    },
-    orderBy: [{ courierUserId: 'asc' }, { at: 'desc' }],
-    select: { courierUserId: true, isOnline: true, at: true },
-  });
+    const state = new Map<string, boolean>();
+    for (const p of profiles) state.set(p.userId, !!p.isOnline);
 
-  const seen = new Set<string>();
-  for (const e of lastEvents) {
-    if (seen.has(e.courierUserId)) continue;
-    seen.add(e.courierUserId);
-    state.set(e.courierUserId, !!e.isOnline);
-  }
+    const lastEvents = await this.prisma.courierOnlineEvent.findMany({
+      where: { courierUserId: { in: ids }, at: { lt: start } },
+      orderBy: [{ courierUserId: 'asc' }, { at: 'desc' }],
+      select: { courierUserId: true, isOnline: true, at: true },
+    });
 
-  let onlineCount = 0;
-  for (const v of state.values()) if (v) onlineCount++;
-
-  // 3) events in range [start, end+1bucket)
-  const rangeTo = bucket === 'day' ? addDays(end, 1) : addHours(end, 1);
-
-  const events = await this.prisma.courierOnlineEvent.findMany({
-    where: {
-      courierUserId: { in: ids },
-      at: { gte: start, lt: rangeTo },
-    },
-    orderBy: [{ at: 'asc' }],
-    select: { courierUserId: true, isOnline: true, at: true },
-  });
-
-  // 4) buckets
-  const points: Array<{ ts: string; online: number }> = [];
-
-  let cursor = new Date(start);
-  let next = bucket === 'day' ? addDays(cursor, 1) : addHours(cursor, 1);
-
-  let i = 0;
-  while (cursor.getTime() <= end.getTime()) {
-    while (i < events.length) {
-      const ev = events[i];
-      const t = ev.at.getTime();
-
-      if (t < cursor.getTime()) {
-        i++;
-        continue;
-      }
-      if (t >= next.getTime()) break;
-
-      const prev = state.get(ev.courierUserId) ?? false;
-      const cur = !!ev.isOnline;
-
-      if (prev !== cur) {
-        state.set(ev.courierUserId, cur);
-        onlineCount += cur ? 1 : -1;
-      }
-
-      i++;
+    const seen = new Set<string>();
+    for (const e of lastEvents) {
+      if (seen.has(e.courierUserId)) continue;
+      seen.add(e.courierUserId);
+      state.set(e.courierUserId, !!e.isOnline);
     }
 
-    points.push({ ts: cursor.toISOString(), online: onlineCount });
+    let onlineCount = 0;
+    for (const v of state.values()) if (v) onlineCount++;
 
-    cursor = next;
-    next = bucket === 'day' ? addDays(cursor, 1) : addHours(cursor, 1);
+    const rangeTo = bucket === 'day' ? addDays(end, 1) : addHours(end, 1);
+
+    const events = await this.prisma.courierOnlineEvent.findMany({
+      where: { courierUserId: { in: ids }, at: { gte: start, lt: rangeTo } },
+      orderBy: [{ at: 'asc' }],
+      select: { courierUserId: true, isOnline: true, at: true },
+    });
+
+    const points: Array<{ ts: string; online: number }> = [];
+
+    let cursor = new Date(start);
+    let next = bucket === 'day' ? addDays(cursor, 1) : addHours(cursor, 1);
+
+    let i = 0;
+    while (cursor.getTime() <= end.getTime()) {
+      while (i < events.length) {
+        const ev = events[i];
+        const t = ev.at.getTime();
+
+        if (t < cursor.getTime()) {
+          i++;
+          continue;
+        }
+        if (t >= next.getTime()) break;
+
+        const prev = state.get(ev.courierUserId) ?? false;
+        const cur = !!ev.isOnline;
+
+        if (prev !== cur) {
+          state.set(ev.courierUserId, cur);
+          onlineCount += cur ? 1 : -1;
+        }
+
+        i++;
+      }
+
+      points.push({ ts: cursor.toISOString(), online: onlineCount });
+
+      cursor = next;
+      next = bucket === 'day' ? addDays(cursor, 1) : addHours(cursor, 1);
+    }
+
+    return {
+      period: { from: start.toISOString(), to: toDate.toISOString() },
+      bucket,
+      points,
+      generatedAt: now.toISOString(),
+    };
   }
-
-  return {
-    period: { from: start.toISOString(), to: toDate.toISOString() },
-    bucket,
-    points,
-    generatedAt: now.toISOString(),
-  };
-}
-  // =========================================================================================================
 
   async byCourier(user: JwtUser, courierUserId: string, from?: string, to?: string) {
     this.ensureAdmin(user);
@@ -338,12 +611,8 @@ export class CourierMetricsService {
     const toDate = to ? new Date(to) : now;
     const fromDate = from ? new Date(from) : new Date(now.getTime() - 30 * 86400000);
 
-    // delivered / canceled / avg time etc
     const orders = await this.prisma.order.findMany({
-      where: {
-        courierId: courierUserId,
-        createdAt: { gte: fromDate, lte: toDate },
-      },
+      where: { courierId: courierUserId, createdAt: { gte: fromDate, lte: toDate } },
       select: {
         id: true,
         status: true,
