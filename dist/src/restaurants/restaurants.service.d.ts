@@ -1,0 +1,243 @@
+import { PrismaService } from '../prisma/prisma.service';
+import { CreateRestaurantDto } from './dto/create-restaurant.dto';
+export declare class RestaurantsService {
+    private readonly prisma;
+    constructor(prisma: PrismaService);
+    private readonly FINANCE_CONFIG_ID;
+    private getOrCreateFinanceConfig;
+    private validatePct;
+    private validateNonNegativeInt;
+    getFinanceConfig(): Promise<{
+        id: string;
+        updatedAt: Date;
+        clientDeliveryFeeDefault: number;
+        clientDeliveryFeeWeather: number;
+        courierPayoutDefault: number;
+        courierPayoutWeather: number;
+        courierCommissionPctDefault: number;
+        restaurantCommissionPctDefault: number;
+        weatherEnabled: boolean;
+    }>;
+    updateFinanceConfig(dto: {
+        clientDeliveryFeeDefault?: number;
+        clientDeliveryFeeWeather?: number;
+        courierPayoutDefault?: number;
+        courierPayoutWeather?: number;
+        courierCommissionPctDefault?: number;
+        restaurantCommissionPctDefault?: number;
+        weatherEnabled?: boolean;
+    }): Promise<{
+        id: string;
+        updatedAt: Date;
+        clientDeliveryFeeDefault: number;
+        clientDeliveryFeeWeather: number;
+        courierPayoutDefault: number;
+        courierPayoutWeather: number;
+        courierCommissionPctDefault: number;
+        restaurantCommissionPctDefault: number;
+        weatherEnabled: boolean;
+    }>;
+    getRestaurantCommissionDefault(): Promise<{
+        restaurantCommissionPctDefault: number;
+        updatedAt: Date;
+    }>;
+    setRestaurantCommissionDefault(restaurantCommissionPctDefault?: number): Promise<{
+        updatedAt: Date;
+        restaurantCommissionPctDefault: number;
+    }>;
+    findAll(q?: string, status?: 'OPEN' | 'CLOSED'): Promise<{
+        runtimeStatus: "OPEN" | "CLOSED";
+        effectiveRestaurantCommissionPct: number;
+        number: number;
+        address: string | null;
+        id: string;
+        phone: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        slug: string;
+        nameRu: string;
+        nameKk: string;
+        workingHours: string | null;
+        coverImageUrl: string | null;
+        ratingAvg: number;
+        ratingCount: number;
+        status: import("@prisma/client").$Enums.RestaurantStatus;
+        isInApp: boolean;
+        restaurantCommissionPctOverride: number | null;
+        isPinned: boolean;
+        sortOrder: number;
+        useRandom: boolean;
+    }[]>;
+    create(dto: CreateRestaurantDto): Promise<{
+        number: number;
+        address: string | null;
+        id: string;
+        phone: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        slug: string;
+        nameRu: string;
+        nameKk: string;
+        workingHours: string | null;
+        status: import("@prisma/client").$Enums.RestaurantStatus;
+        isInApp: boolean;
+        restaurantCommissionPctOverride: number | null;
+    }>;
+    setInApp(id: string, isInApp?: boolean): Promise<{
+        number: number;
+        address: string | null;
+        id: string;
+        phone: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        slug: string;
+        nameRu: string;
+        nameKk: string;
+        workingHours: string | null;
+        status: import("@prisma/client").$Enums.RestaurantStatus;
+        isInApp: boolean;
+        restaurantCommissionPctOverride: number | null;
+        isPinned: boolean;
+        sortOrder: number;
+        useRandom: boolean;
+    }>;
+    setRestaurantCommissionOverride(id: string, restaurantCommissionPctOverride?: number | null): Promise<{
+        effectiveRestaurantCommissionPct: number;
+        number: number;
+        address: string | null;
+        id: string;
+        phone: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        slug: string;
+        nameRu: string;
+        nameKk: string;
+        workingHours: string | null;
+        status: import("@prisma/client").$Enums.RestaurantStatus;
+        isInApp: boolean;
+        restaurantCommissionPctOverride: number | null;
+        isPinned: boolean;
+        sortOrder: number;
+        useRandom: boolean;
+    }>;
+    resetRestaurantCommissionOverride(id: string): Promise<{
+        effectiveRestaurantCommissionPct: number;
+        number: number;
+        address: string | null;
+        id: string;
+        phone: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        slug: string;
+        nameRu: string;
+        nameKk: string;
+        workingHours: string | null;
+        status: import("@prisma/client").$Enums.RestaurantStatus;
+        isInApp: boolean;
+        restaurantCommissionPctOverride: number | null;
+        isPinned: boolean;
+        sortOrder: number;
+        useRandom: boolean;
+    }>;
+    remove(id: string): Promise<{
+        ok: boolean;
+    }>;
+    list(opts: {
+        random: boolean;
+    }): Promise<{
+        pinned: {
+            number: number;
+            address: string | null;
+            id: string;
+            phone: string | null;
+            slug: string;
+            nameRu: string;
+            nameKk: string;
+            workingHours: string | null;
+            coverImageUrl: string | null;
+            ratingAvg: number;
+            ratingCount: number;
+            status: import("@prisma/client").$Enums.RestaurantStatus;
+            isInApp: boolean;
+            restaurantCommissionPctOverride: number | null;
+            isPinned: boolean;
+            sortOrder: number;
+            useRandom: boolean;
+        }[];
+        items: {
+            number: number;
+            address: string | null;
+            id: string;
+            phone: string | null;
+            slug: string;
+            nameRu: string;
+            nameKk: string;
+            workingHours: string | null;
+            coverImageUrl: string | null;
+            ratingAvg: number;
+            ratingCount: number;
+            status: import("@prisma/client").$Enums.RestaurantStatus;
+            isInApp: boolean;
+            restaurantCommissionPctOverride: number | null;
+            isPinned: boolean;
+            sortOrder: number;
+            useRandom: boolean;
+        }[];
+    }>;
+    getOne(id: string): Promise<{
+        effectiveRestaurantCommissionPct: number;
+        number: number;
+        address: string | null;
+        id: string;
+        phone: string | null;
+        createdAt: Date;
+        updatedAt: Date;
+        slug: string;
+        nameRu: string;
+        nameKk: string;
+        workingHours: string | null;
+        descriptionRu: string | null;
+        descriptionKk: string | null;
+        coverImageUrl: string | null;
+        ratingAvg: number;
+        ratingCount: number;
+        status: import("@prisma/client").$Enums.RestaurantStatus;
+        isInApp: boolean;
+        restaurantCommissionPctOverride: number | null;
+        isPinned: boolean;
+        sortOrder: number;
+        useRandom: boolean;
+    }>;
+    products(restaurantId: string, opts: {
+        includeUnavailable: boolean;
+    }): Promise<{
+        restaurant: {
+            number: number;
+            id: string;
+            slug: string;
+            nameRu: string;
+            nameKk: string;
+            status: import("@prisma/client").$Enums.RestaurantStatus;
+        };
+        products: {
+            id: string;
+            titleRu: string;
+            titleKk: string;
+            price: number;
+            imageUrl: string | null;
+            isAvailable: boolean;
+            category: {
+                id: string;
+                sortOrder: number;
+                code: string;
+                titleRu: string;
+                titleKk: string;
+                iconUrl: string | null;
+            } | null;
+        }[];
+    }>;
+    private buildStableSlug;
+    private slugify;
+    private shuffle;
+    private getCurrentMinutesInTimeZone;
+}

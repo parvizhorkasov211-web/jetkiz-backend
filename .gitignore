@@ -1,20 +1,5 @@
-﻿node_modules/
-dist/
-api/dist/
-api/node_modules/
+node_modules
+# Keep environment variables out of version control
 .env
-api/.env
-.env.*
-*.log
-coverage/
-.idea/
-.vscode/
-.DS_Store
 
-api/.env
-admin/.env.local
-*.bak
-.env
-.env.*
-!.env.example
-
+/generated/prisma

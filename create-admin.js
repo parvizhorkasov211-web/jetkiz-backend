@@ -5,29 +5,33 @@ const { PrismaClient } = require("@prisma/client");
 const { Pool } = require("pg");
 const { PrismaPg } = require("@prisma/adapter-pg");
 
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
-const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
-
 (async () => {
-  const phone = process.argv[2];
-  const password = process.argv[3];
+  const phone = process.env.ADMIN_PHONE;
+  const password = process.env.ADMIN_PASSWORD;
 
-  const hash = await bcrypt.hash(password, 10);
+  if (!phone) throw new Error("Missing ADMIN_PHONE env var.");
+  if (!password) throw new Error("Missing ADMIN_PASSWORD env var.");
+  if (!process.env.DATABASE_URL) throw new Error("Missing DATABASE_URL in env.");
 
-  const user = await prisma.user.upsert({
-    where: { phone },
-    update: { role: "ADMIN", passwordHash: hash, isActive: true, otpCode: null, otpExpiresAt: null },
-    create: { phone, role: "ADMIN", passwordHash: hash, isActive: true },
-    select: { id: true, phone: true, role: true }
-  });
+  const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+  const prisma = new PrismaClient({ adapter: new PrismaPg(pool) });
 
-  console.log("OK admin:", user);
+  try {
+    const hash = await bcrypt.hash(password, 10);
 
-  await prisma.$disconnect();
-  await pool.end();
-})().catch(async (e) => {
-  console.error(e);
-  try { await prisma.$disconnect(); } catch {}
-  try { await pool.end(); } catch {}
+    const user = await prisma.user.upsert({
+      where: { phone },
+      update: { role: "ADMIN", passwordHash: hash, isActive: true, otpCode: null, otpExpiresAt: null },
+      create: { phone, role: "ADMIN", passwordHash: hash, isActive: true },
+      select: { id: true, phone: true, role: true, isActive: true },
+    });
+
+    console.log("OK admin:", user);
+  } finally {
+    await prisma.$disconnect().catch(() => {});
+    await pool.end().catch(() => {});
+  }
+})().catch((e) => {
+  console.error("CREATE ADMIN ERROR:", e);
   process.exit(1);
 });
