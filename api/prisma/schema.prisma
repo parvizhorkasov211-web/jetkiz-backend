@@ -18,15 +18,12 @@ model User {
   phone String   @unique
   role  UserRole @default(CLIENT)
 
-  // Auth OTP (для клиентов)
   otpCode      String?
   otpExpiresAt DateTime?
 
-  // Auth password (для курьеров/админа)
   passwordHash String?
   isActive     Boolean @default(true)
 
-  // Profile
   firstName String?
   lastName  String?
   email     String?
@@ -35,15 +32,17 @@ model User {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // Opposite relations
   reviews Review[]
   orders  Order[]
 
-  // Courier relations
   courierProfile       CourierProfile?
-  courierNotesAuthored CourierNote[]   @relation("CourierNoteAuthor")
+  courierNotesAuthored CourierNote[]    @relation("CourierNoteAuthor")
   courierReviews       CourierReview[]
   addresses            Address[]
+  promoCodeUsages      PromoCodeUsage[]
+
+  restaurantPayoutsConfirmed RestaurantPayout[] @relation("RestaurantPayoutPaidByAdmin")
+  courierPayoutsConfirmed    CourierPayout[]    @relation("CourierPayoutPaidByAdmin")
 
   @@index([role])
   @@index([isActive])
@@ -77,10 +76,8 @@ model Restaurant {
 
   status RestaurantStatus @default(OPEN)
 
-  // ✅ включен ли ресторан в приложении (доступен для заказа)
   isInApp Boolean @default(true)
 
-  // ✅ NEW (B): override комиссии ресторана (в процентах). Если null — берём FinanceConfig.restaurantCommissionPctDefault
   restaurantCommissionPctOverride Int?
 
   isPinned  Boolean @default(false)
@@ -90,29 +87,27 @@ model Restaurant {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  // ✅ relations
   products   Product[]
   promos     Promo[]
   reviews    Review[]
   orders     Order[]
-  categories FoodCategory[] // ✅ NEW: категории принадлежат ресторану
+  categories FoodCategory[]
+  promoCodes PromoCode[]
+
+  payouts RestaurantPayout[]
 
   @@index([isPinned, sortOrder])
   @@index([status])
   @@index([number])
   @@index([isInApp])
-
-  // ✅ NEW: индекс для выборок/фильтров по override
   @@index([restaurantCommissionPctOverride])
 }
 
 model FoodCategory {
   id String @id @default(uuid())
 
-  // ✅ NEW: категория принадлежит ресторану
   restaurantId String
 
-  // ✅ code уникален внутри ресторана
   code String
 
   titleRu String
@@ -129,8 +124,8 @@ model FoodCategory {
   products Product[]
   promos   Promo[]
 
-  @@index([restaurantId, sortOrder])
   @@unique([restaurantId, code])
+  @@index([restaurantId, sortOrder])
 }
 
 model Product {
@@ -144,7 +139,6 @@ model Product {
   restaurantId String
   categoryId   String?
 
-  // ✅ NEW: дополнительные поля товара (сохранение из админки)
   weight      String?
   composition String?
   description String?
@@ -158,10 +152,28 @@ model Product {
 
   orderItems OrderItem[]
 
+  images ProductImage[]
+
   @@index([restaurantId])
   @@index([categoryId])
   @@index([isAvailable])
   @@index([isDrink])
+}
+
+model ProductImage {
+  id        String @id @default(uuid())
+  productId String
+
+  url       String
+  isMain    Boolean @default(false)
+  sortOrder Int     @default(0)
+
+  createdAt DateTime @default(now())
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([productId, isMain])
+  @@index([productId, sortOrder])
 }
 
 model Promo {
@@ -187,6 +199,73 @@ model Promo {
   @@index([restaurantId])
   @@index([categoryId])
   @@index([isActive])
+}
+
+enum PromoCodeType {
+  PERCENT
+  FIXED
+  FREE_DELIVERY
+}
+
+model PromoCode {
+  id String @id @default(uuid())
+
+  code String @unique
+
+  type  PromoCodeType
+  value Int           @default(0)
+
+  isActive Boolean @default(true)
+
+  startsAt  DateTime?
+  expiresAt DateTime?
+
+  usageLimit   Int?
+  usedCount    Int  @default(0)
+  perUserLimit Int?
+
+  minOrderAmount    Int?
+  maxDiscountAmount Int?
+
+  firstOrderOnly Boolean @default(false)
+
+  restaurantId String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  restaurant Restaurant? @relation(fields: [restaurantId], references: [id], onDelete: SetNull)
+
+  usages PromoCodeUsage[]
+  orders Order[]
+
+  @@index([code])
+  @@index([isActive])
+  @@index([restaurantId])
+  @@index([startsAt])
+  @@index([expiresAt])
+}
+
+model PromoCodeUsage {
+  id String @id @default(uuid())
+
+  promoCodeId String
+  userId      String
+  orderId     String?
+
+  discountAmount         Int @default(0)
+  deliveryDiscountAmount Int @default(0)
+
+  usedAt DateTime @default(now())
+
+  promoCode PromoCode @relation(fields: [promoCodeId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  order     Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([promoCodeId])
+  @@index([userId])
+  @@index([orderId])
+  @@index([usedAt])
 }
 
 model Review {
@@ -219,9 +298,6 @@ model Address {
   door    String?
   comment String?
 
-  lat Float?
-  lng Float?
-
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -253,21 +329,16 @@ enum PricingSource {
 model FinanceConfig {
   id String @id
 
-  // цена доставки для клиента
   clientDeliveryFeeDefault Int @default(1200)
   clientDeliveryFeeWeather Int @default(1500)
 
-  // выплата курьеру
   courierPayoutDefault Int @default(1100)
   courierPayoutWeather Int @default(1500)
 
-  // комиссия сервиса с выплаты курьеру (процент)
   courierCommissionPctDefault Int @default(15)
 
-  // ✅ NEW (B): дефолтная комиссия сервиса с ресторана (процент)
   restaurantCommissionPctDefault Int @default(20)
 
-  // погода/пик режим
   weatherEnabled Boolean @default(false)
 
   updatedAt DateTime @updatedAt
@@ -284,10 +355,21 @@ enum OrderStatus {
   PAID
 }
 
+enum RestaurantPayoutStatus {
+  PENDING
+  PAID
+  CANCELED
+}
+
+enum CourierPayoutStatus {
+  PENDING
+  PAID
+  CANCELED
+}
+
 model Order {
   id String @id @default(uuid())
 
-  // ✅ NEW: человекочитаемый номер заказа
   number Int @unique @default(autoincrement())
 
   userId       String
@@ -295,9 +377,14 @@ model Order {
 
   status OrderStatus @default(CREATED)
 
-  subtotal    Int
-  deliveryFee Int
-  total       Int
+  subtotal               Int
+  deliveryFee            Int
+  discountAmount         Int @default(0)
+  deliveryDiscountAmount Int @default(0)
+  total                  Int
+
+  promoCodeId String?
+  promoCode   String?
 
   addressId   String
   phone       String
@@ -309,24 +396,27 @@ model Order {
 
   ratingGiven Boolean @default(false)
 
-  // Courier assignment
   courierId   String?
-  courierFee  Int       @default(0) // ✅ это “выплата курьеру” за заказ (фиксируется)
+  courierFee  Int       @default(0)
   assignedAt  DateTime?
   pickedUpAt  DateTime?
   deliveredAt DateTime?
 
-  // ✅ NEW: обещанное время доставки (дедлайн клиенту) — нужно для On-Time Delivery Rate
   promisedAt DateTime?
 
-  // ✅ NEW: что применилось по выплате/тарифу
   pricingSource       PricingSource @default(AUTO_DEFAULT)
   courierBonusApplied Int           @default(0)
 
-  // ✅ NEW: фиксируем удержание/комиссию сервиса с выплаты курьеру
   courierFeeGross             Int @default(0)
   courierCommissionPctApplied Int @default(0)
   courierCommissionAmount     Int @default(0)
+
+  restaurantCommissionPctApplied Int @default(0)
+  restaurantCommissionAmount     Int @default(0)
+  restaurantPayoutAmount         Int @default(0)
+
+  restaurantPayoutId String?
+  courierPayoutId    String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -334,30 +424,37 @@ model Order {
   user       User       @relation(fields: [userId], references: [id])
   restaurant Restaurant @relation(fields: [restaurantId], references: [id])
 
-  // ✅ FIX: обратная связь для Address.orders
   address Address @relation(fields: [addressId], references: [id], onDelete: Cascade)
 
   courier CourierProfile? @relation(fields: [courierId], references: [userId])
 
-  items OrderItem[]
+  promoCodeRef PromoCode? @relation(fields: [promoCodeId], references: [id])
 
-  // ✅ opposite side for CourierReview.order
+  restaurantPayout RestaurantPayout? @relation(fields: [restaurantPayoutId], references: [id], onDelete: SetNull)
+  courierPayout    CourierPayout?    @relation(fields: [courierPayoutId], references: [id], onDelete: SetNull)
+
+  items           OrderItem[]
+  promoCodeUsages PromoCodeUsage[]
+
   courierReview CourierReview? @relation("OrderCourierReview")
 
-  // ✅ NEW: ledger opposite (optional)
   courierLedgerEntries CourierLedgerEntry[]
 
   @@index([userId])
   @@index([restaurantId])
   @@index([status])
   @@index([createdAt])
+  @@index([deliveredAt])
   @@index([courierId])
   @@index([assignedAt])
   @@index([addressId])
-  // ✅ NEW
   @@index([number])
   @@index([pricingSource])
   @@index([promisedAt])
+  @@index([promoCodeId])
+  @@index([promoCode])
+  @@index([restaurantPayoutId])
+  @@index([courierPayoutId])
 }
 
 model OrderItem {
@@ -376,6 +473,76 @@ model OrderItem {
   @@index([productId])
 }
 
+model RestaurantPayout {
+  id           String @id @default(uuid())
+  restaurantId String
+
+  periodFrom DateTime
+  periodTo   DateTime
+
+  ordersCount Int @default(0)
+
+  grossSubtotal    Int @default(0)
+  commissionAmount Int @default(0)
+  payoutAmount     Int @default(0)
+
+  status RestaurantPayoutStatus @default(PENDING)
+  paidAt DateTime?
+  note   String?
+
+  paymentReference String?
+  paymentComment   String?
+  paidByAdminId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  restaurant  Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+  orders      Order[]
+  paidByAdmin User?      @relation("RestaurantPayoutPaidByAdmin", fields: [paidByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([restaurantId])
+  @@index([status])
+  @@index([paidAt])
+  @@index([periodFrom, periodTo])
+  @@index([paidByAdminId])
+}
+
+model CourierPayout {
+  id            String @id @default(uuid())
+  courierUserId String
+
+  periodFrom DateTime
+  periodTo   DateTime
+
+  ordersCount Int @default(0)
+
+  grossAmount      Int @default(0)
+  commissionAmount Int @default(0)
+  payoutAmount     Int @default(0)
+
+  status CourierPayoutStatus @default(PENDING)
+  paidAt DateTime?
+  note   String?
+
+  paymentReference String?
+  paymentComment   String?
+  paidByAdminId    String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  courier     CourierProfile @relation(fields: [courierUserId], references: [userId], onDelete: Cascade)
+  orders      Order[]
+  paidByAdmin User?          @relation("CourierPayoutPaidByAdmin", fields: [paidByAdminId], references: [id], onDelete: SetNull)
+
+  @@index([courierUserId])
+  @@index([status])
+  @@index([paidAt])
+  @@index([periodFrom, periodTo])
+  @@index([paidByAdminId])
+}
+
 /**
  * =========================
  * COURIERS
@@ -385,33 +552,27 @@ model OrderItem {
 model CourierProfile {
   userId String @id
 
-  // ✅ NEW: человекочитаемый номер курьера (опционально, но включено)
   number Int @unique @default(autoincrement())
+
+  lat Float?
+  lng Float?
 
   firstName String
   lastName  String
   iin       String
 
-  // адрес проживания (как строка на старте)
   addressText String?
-  // комментарий менеджера
   comment     String?
 
-  // блокировка (причина/дата). Сам флаг блокировки остаётся в User.isActive
   blockedAt   DateTime?
   blockReason String?
 
-  // индивидуальный коэффициент (персональный), если null — берём глобальный тариф
-  // (оставляем как legacy/fixed override, но ПОГОДА имеет приоритет)
   personalFeeOverride Int?
 
-  // ✅ NEW: мотивация курьеру (надбавка), применяется поверх базы/погоды
   payoutBonusAdd Int @default(0)
 
-  // ✅ NEW: override комиссии сервиса (процент). Если null — берём FinanceConfig.courierCommissionPctDefault
   courierCommissionPctOverride Int?
 
-  // контроль активности
   isOnline       Boolean   @default(false)
   lastSeenAt     DateTime?
   lastActiveAt   DateTime?
@@ -428,14 +589,12 @@ model CourierProfile {
 
   onlineEvents CourierOnlineEvent[]
 
-  // ✅ NEW: ledger entries (balance/history)
   ledgerEntries CourierLedgerEntry[]
+  payouts       CourierPayout[]
 
   @@index([iin])
   @@index([isOnline])
-  // ✅ NEW
   @@index([number])
-  // ✅ ADD: для быстрых выборок по активности
   @@index([lastSeenAt])
   @@index([lastActiveAt])
 }
@@ -447,7 +606,6 @@ model CourierTariff {
 
   isActive Boolean @default(true)
 
-  // планирование: можно заранее создать тариф с датой начала
   startsAt DateTime?
   endsAt   DateTime?
 
@@ -514,13 +672,12 @@ model CourierOnlineEvent {
 
   @@index([courierUserId, at])
   @@index([at])
-  // ✅ ADD: удобно для фильтра по источнику (admin/courier/system)
   @@index([source])
 }
 
 /**
  * =========================
- * ✅ COURIER LEDGER (FINANCE)
+ * COURIER LEDGER (FINANCE)
  * =========================
  */
 
@@ -534,13 +691,13 @@ enum LedgerType {
 }
 
 model CourierLedgerEntry {
-  id            String   @id @default(uuid())
+  id            String     @id @default(uuid())
   courierUserId String
   orderId       String?
   type          LedgerType
   amount        Int
   comment       String?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime   @default(now())
 
   courier CourierProfile @relation(fields: [courierUserId], references: [userId], onDelete: Cascade)
   order   Order?         @relation(fields: [orderId], references: [id], onDelete: SetNull)

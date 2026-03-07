@@ -7,15 +7,15 @@ import * as bcrypt from 'bcryptjs';
 function normalizePhone(input: string) {
   const raw = (input ?? '').trim();
 
-  // только цифры
   let digits = raw.replace(/\D/g, '');
 
-  // Казахстан: 8XXXXXXXXXX -> 7XXXXXXXXXX
   if (digits.length === 11 && digits.startsWith('8')) {
     digits = '7' + digits.slice(1);
   }
 
-  return digits;
+  if (!digits) return '';
+
+  return `+${digits}`;
 }
 
 @Injectable()
@@ -63,11 +63,10 @@ export class AuthService {
       data: { otpCode: null, otpExpiresAt: null },
     });
 
-    const accessToken = await this.jwt.signAsync({
-      sub: user.id,
-      role: user.role,
-    });
-
+   const accessToken = await this.jwt.signAsync({
+  userId: user.id,
+  role: user.role,
+});
     return { accessToken };
   }
 
@@ -101,10 +100,10 @@ export class AuthService {
     const ok = await bcrypt.compare(password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    const accessToken = await this.jwt.signAsync({
-      sub: user.id,
-      role: user.role,
-    });
+   const accessToken = await this.jwt.signAsync({
+  userId: user.id,
+  role: user.role,
+});
 
     return { accessToken };
   }
@@ -125,10 +124,9 @@ export class AuthService {
     }
 
     const accessToken = await this.jwt.signAsync({
-      sub: admin.id,
-      role: admin.role,
-    });
-
+  userId: admin.id,
+  role: admin.role,
+});
     return { accessToken };
   }
 }

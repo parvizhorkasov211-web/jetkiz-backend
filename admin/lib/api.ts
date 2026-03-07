@@ -36,6 +36,7 @@ export async function apiFetch(path: string, init: RequestInit = {}) {
 
   const headers = new Headers(init.headers || {});
 
+  // ВАЖНО: для FormData НЕ ставим Content-Type (boundary выставит браузер)
   if (init.body && !headers.has("Content-Type") && !isFormData(init.body)) {
     headers.set("Content-Type", "application/json");
   }

@@ -18,7 +18,8 @@ type ReviewItem = {
 };
 
 function apiBase() {
-  return (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000').replace(/\/$/, '');
+  // ✅ FIX: дефолт на 3001 (как у тебя API)
+  return (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3001').replace(/\/$/, '');
 }
 
 function fmtMoney(n: number) {
@@ -42,7 +43,6 @@ function fmtDateTime(iso: string) {
 }
 
 function fmtDateOnly(ymd: string) {
-  // ymd: YYYY-MM-DD
   try {
     const [Y, M, D] = ymd.split('-').map(Number);
     if (!Y || !M || !D) return ymd;
@@ -63,27 +63,27 @@ function ratingMeta(rating: number) {
   if (r >= 5) {
     return {
       label: 'Отлично',
-      badge: 'badge badge-light-success',
-      rowBg: 'rgba(34, 197, 94, 0.06)',
+      pill: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+      rowBg: 'rgba(34, 197, 94, 0.05)',
       textColor: 'rgba(22, 163, 74, 1)',
-      border: 'rgba(34, 197, 94, 0.26)',
+      border: 'rgba(34, 197, 94, 0.25)',
     };
   }
   if (r >= 3) {
     return {
       label: 'Средне',
-      badge: 'badge badge-light-warning',
-      rowBg: 'rgba(245, 158, 11, 0.06)',
+      pill: 'bg-amber-100 text-amber-800 border-amber-200',
+      rowBg: 'rgba(245, 158, 11, 0.05)',
       textColor: 'rgba(217, 119, 6, 1)',
-      border: 'rgba(245, 158, 11, 0.26)',
+      border: 'rgba(245, 158, 11, 0.25)',
     };
   }
   return {
     label: 'Плохо',
-    badge: 'badge badge-light-danger',
-    rowBg: 'rgba(220, 38, 38, 0.06)',
+    pill: 'bg-rose-100 text-rose-700 border-rose-200',
+    rowBg: 'rgba(220, 38, 38, 0.05)',
     textColor: 'rgba(220, 38, 38, 1)',
-    border: 'rgba(220, 38, 38, 0.26)',
+    border: 'rgba(220, 38, 38, 0.25)',
   };
 }
 
@@ -94,27 +94,10 @@ function toYmdLocalInput(d: Date) {
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function CalendarIcon() {
-  return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path
-        d="M7 2v3M17 2v3M3 9h18M5 5h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2Z"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <path
-        d="M7 13h3M7 17h3M14 13h3M14 17h3"
-        stroke="currentColor"
-        strokeWidth="1.6"
-        strokeLinecap="round"
-      />
-    </svg>
-  );
-}
-
-/** ✅ определяем активный пресет по текущим from/to */
+/** preset active if:
+ * - to = today
+ * - from = today - {7|30|90}
+ */
 function detectPreset(from: string, to: string): 7 | 30 | 90 | null {
   if (!from || !to) return null;
 
@@ -131,6 +114,91 @@ function detectPreset(from: string, to: string): 7 | 30 | 90 | null {
   if (from === f30) return 30;
   if (from === f90) return 90;
   return null;
+}
+
+/** ===== UI Primitives (как в аналитике) ===== */
+
+function Panel({
+  title,
+  subtitle,
+  right,
+  children,
+  tone = 'default',
+}: {
+  title: React.ReactNode;
+  subtitle?: React.ReactNode;
+  right?: React.ReactNode;
+  children: React.ReactNode;
+  tone?: 'default' | 'muted';
+}) {
+  const shell = tone === 'muted' ? 'bg-slate-100/80 border-slate-200' : 'bg-white border-slate-200';
+  const body = tone === 'muted' ? 'bg-white/70' : 'bg-white';
+
+  return (
+    <div className={`rounded-2xl border shadow-sm ${shell}`}>
+      <div className="px-4 py-4 border-b border-slate-200/70 flex items-start justify-between gap-4">
+        <div>
+          <div className="font-semibold text-2xl leading-tight">{title}</div>
+          {subtitle ? <div className="text-base opacity-70 mt-2">{subtitle}</div> : null}
+        </div>
+        {right ? <div className="shrink-0 text-base">{right}</div> : null}
+      </div>
+      <div className={`p-5 rounded-b-2xl ${body}`}>{children}</div>
+    </div>
+  );
+}
+
+type StatTheme = 'green' | 'blue' | 'orange' | 'red' | 'gray';
+
+function themeToBg(theme: StatTheme) {
+  switch (theme) {
+    case 'green':
+      return 'bg-gradient-to-br from-emerald-500 to-emerald-700';
+    case 'blue':
+      return 'bg-gradient-to-br from-sky-500 to-indigo-700';
+    case 'orange':
+      return 'bg-gradient-to-br from-orange-400 to-rose-600';
+    case 'red':
+      return 'bg-gradient-to-br from-red-500 to-rose-700';
+    default:
+      return 'bg-gradient-to-br from-slate-500 to-slate-700';
+  }
+}
+
+function StatCard({
+  title,
+  value,
+  hint,
+  theme,
+  icon,
+}: {
+  title: string;
+  value: React.ReactNode;
+  hint?: React.ReactNode;
+  theme: StatTheme;
+  icon?: React.ReactNode;
+}) {
+  return (
+    <div className={`rounded-2xl p-5 text-white shadow-sm border border-white/15 ${themeToBg(theme)}`}>
+      <div className="flex items-start justify-between gap-4">
+        <div className="flex items-center gap-4">
+          <div className="w-12 h-12 rounded-2xl bg-white/15 flex items-center justify-center">
+            <span className="text-2xl">{icon ?? '●'}</span>
+          </div>
+          <div className="text-lg opacity-95 font-semibold">{title}</div>
+        </div>
+      </div>
+
+      <div className="mt-4 text-4xl font-extrabold leading-tight">{value}</div>
+      {hint ? <div className="mt-3 text-base opacity-95">{hint}</div> : null}
+    </div>
+  );
+}
+
+function classPreset(active: boolean) {
+  return active
+    ? 'bg-emerald-600 text-white border-emerald-700 shadow-md'
+    : 'bg-white text-slate-900 border-slate-300 hover:bg-slate-50';
 }
 
 export default function RestaurantReviewsPage() {
@@ -169,12 +237,6 @@ export default function RestaurantReviewsPage() {
   }, []);
 
   const activePreset = useMemo(() => detectPreset(from, to), [from, to]);
-  const isCustomRange = useMemo(() => Boolean(from && to && !activePreset), [from, to, activePreset]);
-
-  const presetBtnClass = (days: 7 | 30 | 90) =>
-    activePreset === days ? 'btn btn-sm btn-success fw-semibold' : 'btn btn-sm btn-light fw-semibold';
-
-  const customBtnClass = isCustomRange ? 'btn btn-sm btn-success fw-semibold' : 'btn btn-sm btn-light fw-semibold';
 
   const queryString = useMemo(() => {
     const p = new URLSearchParams();
@@ -224,349 +286,351 @@ export default function RestaurantReviewsPage() {
   const totalPages = Math.max(1, Math.ceil((total || 0) / (limit || 1)));
 
   const stats = useMemo(() => {
-    const s = { good: 0, mid: 0, bad: 0 };
+    const s = { good: 0, mid: 0, bad: 0, avg: 0 };
+    let sum = 0;
+    let cnt = 0;
+
     for (const r of items) {
       const x = Math.round(Number(r.rating || 0));
+      sum += x;
+      cnt += 1;
+
       if (x >= 5) s.good += 1;
       else if (x >= 3) s.mid += 1;
       else s.bad += 1;
     }
+    s.avg = cnt ? Number((sum / cnt).toFixed(2)) : 0;
     return s;
   }, [items]);
 
   const periodLabel = useMemo(() => {
     if (!from || !to) return '—';
-    const left = fmtDateOnly(from);
-    const right = fmtDateOnly(to);
-    return `${left} → ${right}`;
+    return `${fmtDateOnly(from)} — ${fmtDateOnly(to)}`;
   }, [from, to]);
 
-  return (
-    <div className="container-fluid">
-      {/* ✅ Компактный верх */}
-      <div className="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-        <div className="d-flex align-items-center gap-2">
-          <Link href={`/layout-20/restaurants/${id}`} className="btn btn-sm btn-light fw-semibold" style={{ borderRadius: 10 }}>
-            ← Назад
-          </Link>
+  const headerRight = (
+    <div className="flex items-center gap-4">
+      <button
+        className="btn btn-lg btn-light"
+        onClick={() => router.back()}
+        style={{ borderRadius: 14 }}
+        title="Назад"
+      >
+        ← Назад
+      </button>
 
-          <div className="d-flex flex-column">
-            <div className="fw-bold" style={{ fontSize: 18, lineHeight: 1.2 }}>
-              Отзывы ресторана
-            </div>
-            <div className="text-muted" style={{ fontSize: 12, lineHeight: 1.2 }}>
-              5★ зелёный • 3–4★ жёлтый • 1–2★ красный
-              {loading ? <span className="ms-2">• загрузка…</span> : null}
-            </div>
+      <div className="flex items-center gap-2">
+        <button
+          className="btn btn-lg btn-light"
+          onClick={() => router.push(`/layout-20/restaurants/${id}`)}
+          style={{ borderRadius: 14 }}
+          title="Вернуться в аналитику ресторана"
+        >
+          Аналитика
+        </button>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="space-y-5 rounded-2xl p-4 md:p-5 bg-slate-50">
+      {/* Header */}
+      <div className="flex items-center justify-between gap-4">
+        <div>
+          <div className="text-3xl font-extrabold leading-tight">Отзывы ресторана</div>
+          <div className="text-lg opacity-70 mt-1">
+            Период: <span className="font-semibold text-black">{periodLabel}</span>
+            {loading ? ' · загрузка…' : ''}
           </div>
         </div>
-
-        <div className="d-flex flex-wrap gap-2">
-          <span className="badge badge-light-success" style={{ padding: '8px 10px', borderRadius: 999, fontWeight: 900 }}>
-            Отличные: {stats.good}
-          </span>
-          <span className="badge badge-light-warning" style={{ padding: '8px 10px', borderRadius: 999, fontWeight: 900 }}>
-            Средние: {stats.mid}
-          </span>
-          <span className="badge badge-light-danger" style={{ padding: '8px 10px', borderRadius: 999, fontWeight: 900 }}>
-            Плохие: {stats.bad}
-          </span>
-        </div>
+        {headerRight}
       </div>
 
-      {/* ✅ Компактная панель периода/пагинации */}
-      <div className="card mb-3" style={{ borderRadius: 14 }}>
-        <div className="card-body" style={{ padding: 14 }}>
-          <div className="d-flex flex-wrap align-items-center justify-content-between gap-2">
-            {/* left: период + пресеты */}
-            <div className="d-flex flex-wrap align-items-center gap-2">
-              <div className="d-flex align-items-center gap-2">
-                <div className="fw-bold" style={{ fontSize: 13, minWidth: 64 }}>
-                  Период
-                </div>
+      {error ? (
+        <div className="rounded-2xl border border-rose-200 bg-rose-50 p-4 text-lg text-rose-700">{error}</div>
+      ) : null}
 
-                <span
-                  className="badge badge-light"
-                  style={{
-                    borderRadius: 999,
-                    padding: '8px 10px',
-                    fontWeight: 900,
-                    border: isCustomRange || activePreset ? '1px solid rgba(34,197,94,0.35)' : '1px solid rgba(0,0,0,0.10)',
-                    background: isCustomRange || activePreset ? 'rgba(34,197,94,0.08)' : 'rgba(0,0,0,0.02)',
-                    color: isCustomRange || activePreset ? 'rgba(22,163,74,1)' : 'rgba(0,0,0,0.65)',
-                  }}
-                  title="Текущий период"
-                >
-                  {periodLabel}
-                </span>
-              </div>
+      {/* KPI row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+        <StatCard
+          theme="green"
+          icon="★"
+          title="Отличные (5★)"
+          value={stats.good}
+          hint={<span className="opacity-95">за выбранный период</span>}
+        />
+        <StatCard
+          theme="orange"
+          icon="☆"
+          title="Средние (3–4★)"
+          value={stats.mid}
+          hint={<span className="opacity-95">за выбранный период</span>}
+        />
+        <StatCard
+          theme="red"
+          icon="✕"
+          title="Плохие (1–2★)"
+          value={stats.bad}
+          hint={<span className="opacity-95">за выбранный период</span>}
+        />
+        <StatCard
+          theme="blue"
+          icon="📌"
+          title="Всего"
+          value={total}
+          hint={
+            <span className="opacity-95">
+              средняя оценка: <b>{stats.avg ? `${stats.avg}★` : '—'}</b>
+            </span>
+          }
+        />
+      </div>
 
-              <div className="d-flex flex-wrap gap-2 ms-0 ms-md-2">
-                <button className={presetBtnClass(7)} style={{ borderRadius: 999 }} onClick={() => applyPreset(7)}>
-                  7д
-                </button>
-                <button className={presetBtnClass(30)} style={{ borderRadius: 999 }} onClick={() => applyPreset(30)}>
-                  30д
-                </button>
-                <button className={presetBtnClass(90)} style={{ borderRadius: 999 }} onClick={() => applyPreset(90)}>
-                  90д
-                </button>
-
-                {/* ✅ если кастом — тоже зелёный, чтобы было ясно что выбран не пресет */}
-                <button className={customBtnClass} style={{ borderRadius: 999 }} type="button">
-                  Диапазон
-                </button>
-              </div>
+      {/* Period panel */}
+      <Panel
+        title={
+          <div className="flex items-center gap-3 flex-wrap">
+            <span>Период</span>
+            <span className="px-3 py-1 rounded-full bg-blue-100 text-blue-700 text-base font-semibold">
+              {periodLabel} ({activePreset ? `${activePreset} дн.` : 'кастом'})
+            </span>
+          </div>
+        }
+        right={
+          <div className="flex items-center gap-3">
+            <div className="text-base opacity-70">Лимит</div>
+            <select
+              className="rounded-2xl border border-slate-300 px-3 py-2 text-base font-semibold bg-white"
+              value={limit}
+              onChange={(e) => {
+                setLimit(Number(e.target.value));
+                setPage(1);
+              }}
+              title="Количество на странице"
+            >
+              <option value={20}>20</option>
+              <option value={50}>50</option>
+              <option value={100}>100</option>
+            </select>
+          </div>
+        }
+      >
+        <div className="space-y-6">
+          {/* presets */}
+          <div className="p-5 rounded-2xl bg-slate-100 border border-slate-200">
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div className="text-xl font-extrabold">Быстрый выбор</div>
+              <div className="text-base opacity-70">Пресеты (7 / 30 / 90)</div>
             </div>
 
-            {/* right: лимит + пагинация */}
-            <div className="d-flex flex-wrap align-items-center gap-2">
-              <div className="d-flex align-items-center gap-2">
-                <span className="text-muted" style={{ fontSize: 12 }}>
-                  Лимит
-                </span>
-                <select
-                  className="form-select form-select-sm"
-                  value={limit}
-                  onChange={(e) => {
-                    setLimit(Number(e.target.value));
-                    setPage(1);
-                  }}
-                  style={{ borderRadius: 12, fontWeight: 800, width: 92 }}
-                >
-                  <option value={20}>20</option>
-                  <option value={50}>50</option>
-                  <option value={100}>100</option>
-                </select>
-              </div>
-
-              <div className="d-flex align-items-center gap-2">
-                <button
-                  className="btn btn-sm btn-outline-secondary fw-semibold"
-                  style={{ borderRadius: 12, minWidth: 44, height: 36 }}
-                  disabled={page <= 1}
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  title="Назад"
-                >
-                  ←
-                </button>
-
-                <div
-                  className="px-3 d-flex align-items-center justify-content-center"
-                  style={{
-                    borderRadius: 12,
-                    minWidth: 96,
-                    height: 36,
-                    border: '1px solid rgba(0,0,0,0.12)',
-                    background: 'rgba(0,0,0,0.02)',
-                    fontWeight: 900,
-                    fontSize: 13,
-                  }}
-                  title="Страница"
-                >
-                  {page} / {totalPages}
-                </div>
-
-                <button
-                  className="btn btn-sm btn-outline-secondary fw-semibold"
-                  style={{ borderRadius: 12, minWidth: 44, height: 36 }}
-                  disabled={page >= totalPages}
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  title="Вперёд"
-                >
-                  →
-                </button>
-              </div>
+            <div className="flex flex-wrap gap-4">
+              {[7, 30, 90].map((d) => {
+                const active = activePreset === d;
+                return (
+                  <button
+                    key={d}
+                    onClick={() => applyPreset(d)}
+                    className={`px-6 py-3 rounded-2xl text-lg font-extrabold transition-all border ${classPreset(active)}`}
+                    title={`Выбрать период ${d} дней`}
+                  >
+                    {d} дней
+                  </button>
+                );
+              })}
             </div>
           </div>
 
-          {/* ✅ Даты (компактно, в одну строку) */}
-          <div className="row g-2 mt-2">
-            <div className="col-12 col-md-4">
-              <div className="input-group input-group-sm" style={{ borderRadius: 12, overflow: 'hidden' }}>
-                <span className="input-group-text" style={{ borderRadius: 12, fontWeight: 800 }}>
-                  С
-                </span>
+          {/* custom range */}
+          <div className="p-5 rounded-2xl bg-white border border-slate-200">
+            <div className="flex items-center justify-between gap-4 mb-4">
+              <div className="text-xl font-extrabold">Произвольный диапазон</div>
+              <div className="text-base opacity-70">Выбери даты вручную</div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+              <div>
+                <div className="text-base font-semibold mb-2">С даты</div>
                 <input
                   type="date"
-                  className="form-control"
                   value={from}
                   onChange={(e) => {
                     setFrom(e.target.value);
                     setPage(1);
                   }}
-                  style={{ fontWeight: 800 }}
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
-                <span className="input-group-text" style={{ borderRadius: 12 }}>
-                  <CalendarIcon />
-                </span>
               </div>
-            </div>
 
-            <div className="col-12 col-md-4">
-              <div className="input-group input-group-sm" style={{ borderRadius: 12, overflow: 'hidden' }}>
-                <span className="input-group-text" style={{ borderRadius: 12, fontWeight: 800 }}>
-                  По
-                </span>
+              <div>
+                <div className="text-base font-semibold mb-2">По дату</div>
                 <input
                   type="date"
-                  className="form-control"
                   value={to}
                   onChange={(e) => {
                     setTo(e.target.value);
                     setPage(1);
                   }}
-                  style={{ fontWeight: 800 }}
+                  className="w-full rounded-2xl border border-slate-300 px-4 py-3 text-lg focus:outline-none focus:ring-2 focus:ring-blue-400"
                 />
-                <span className="input-group-text" style={{ borderRadius: 12 }}>
-                  <CalendarIcon />
-                </span>
+              </div>
+
+              {/* pagination */}
+              <div className="flex flex-col">
+                <div className="text-base font-semibold mb-2">Страница</div>
+                <div className="flex items-center gap-3">
+                  <button
+                    className="btn btn-lg btn-light"
+                    style={{ borderRadius: 14 }}
+                    disabled={page <= 1}
+                    onClick={() => setPage((p) => Math.max(1, p - 1))}
+                    title="Назад"
+                  >
+                    ←
+                  </button>
+
+                  <div
+                    className="px-4 py-3 rounded-2xl bg-slate-100 border border-slate-200 text-lg font-extrabold"
+                    style={{ minWidth: 140, textAlign: 'center' }}
+                    title="Текущая страница"
+                  >
+                    {page} / {totalPages}
+                  </div>
+
+                  <button
+                    className="btn btn-lg btn-light"
+                    style={{ borderRadius: 14 }}
+                    disabled={page >= totalPages}
+                    onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                    title="Вперёд"
+                  >
+                    →
+                  </button>
+                </div>
               </div>
             </div>
 
-            <div className="col-12 col-md-4 d-flex align-items-center justify-content-md-end">
-              <div className="text-muted" style={{ fontSize: 12 }}>
-                Всего отзывов: <span className="fw-bold">{total}</span>
-              </div>
+            <div className="mt-5 px-4 py-3 rounded-2xl bg-blue-50 border border-blue-200 text-base text-blue-800">
+              Подсказка: пресет активен только если «по дату» = сегодня. Таблица кликабельна: заказ и клиент открываются отдельно.
             </div>
           </div>
         </div>
-      </div>
+      </Panel>
 
-      {error && (
-        <div className="alert alert-danger" style={{ borderRadius: 14 }}>
-          {error}
-        </div>
-      )}
+      {/* Table */}
+      <Panel
+        title={
+          <div className="flex items-center gap-3">
+            <span>Список отзывов</span>
+            <span className="badge badge-light-primary" style={{ fontSize: 14, padding: '8px 10px' }}>
+              {items.length}
+            </span>
+          </div>
+        }
+        subtitle="Цвет строки зависит от оценки: зелёный (5★), жёлтый (3–4★), красный (1–2★)."
+        tone="muted"
+      >
+        {loading ? (
+          <div className="text-lg opacity-70">Загрузка…</div>
+        ) : !items.length ? (
+          <div className="text-lg opacity-70">Нет отзывов за выбранный период</div>
+        ) : (
+          <div className="overflow-auto rounded-2xl border border-slate-200 bg-white">
+            <table className="min-w-[1400px] w-full text-base">
+              <thead className="bg-black/5 sticky top-0 z-10">
+                <tr>
+                  <th className="text-left p-4 w-[220px]">Оценка</th>
+                  <th className="text-left p-4">Текст</th>
+                  <th className="text-left p-4 w-[200px]">Дата</th>
+                  <th className="text-left p-4 w-[140px]">Заказ</th>
+                  <th className="text-left p-4 w-[170px]">Сумма</th>
+                  <th className="text-left p-4 w-[260px]">Клиент</th>
+                  <th className="text-left p-4 w-[170px]">Телефон</th>
+                </tr>
+              </thead>
 
-      {/* ✅ Таблица/отзывы — без изменений */}
-      <div className="card" style={{ borderRadius: 14 }}>
-        <div className="card-body">
-          {loading ? (
-            <div className="text-muted">Загрузка…</div>
-          ) : !items.length ? (
-            <div className="text-muted">Нет отзывов за выбранный период</div>
-          ) : (
-            <div
-              className="table-responsive"
-              style={{ borderRadius: 12, overflow: 'hidden', border: '1px solid rgba(0,0,0,0.08)' }}
-            >
-              <table className="table align-middle mb-0" style={{ minWidth: 1350 }}>
-                <thead
-                  style={{
-                    position: 'sticky',
-                    top: 0,
-                    zIndex: 2,
-                    background: '#F6F8FB',
-                    borderBottom: '1px solid rgba(0,0,0,0.10)',
-                  }}
-                >
-                  <tr>
-                    <th style={{ width: 210, fontWeight: 800, color: '#111', padding: '14px 14px' }}>Оценка</th>
-                    <th style={{ fontWeight: 800, color: '#111', padding: '14px 14px' }}>Текст</th>
-                    <th style={{ width: 200, fontWeight: 800, color: '#111', padding: '14px 14px' }}>Дата</th>
-                    <th style={{ width: 140, fontWeight: 800, color: '#111', padding: '14px 14px' }}>Заказ</th>
-                    <th style={{ width: 140, fontWeight: 800, color: '#111', padding: '14px 14px' }}>Сумма</th>
-                    <th style={{ width: 220, fontWeight: 800, color: '#111', padding: '14px 14px' }}>Клиент</th>
-                    <th style={{ width: 170, fontWeight: 800, color: '#111', padding: '14px 14px' }}>Телефон</th>
-                  </tr>
-                </thead>
+              <tbody>
+                {items.map((r, idx) => {
+                  const meta = ratingMeta(r.rating);
 
-                <tbody>
-                  {items.map((r) => {
-                    const meta = ratingMeta(r.rating);
+                  const clientName =
+                    r.user?.firstName || r.user?.lastName
+                      ? `${r.user?.firstName || ''} ${r.user?.lastName || ''}`.trim()
+                      : r.user?.phone || r.userId;
 
-                    const clientName =
-                      r.user?.firstName || r.user?.lastName
-                        ? `${r.user?.firstName || ''} ${r.user?.lastName || ''}`.trim()
-                        : r.user?.phone || r.userId;
+                  return (
+                    <tr
+                      key={r.id}
+                      className={`border-t ${idx % 2 ? 'bg-black/[0.01]' : ''}`}
+                      style={{
+                        background: meta.rowBg,
+                        borderLeft: `4px solid ${meta.border}`,
+                      }}
+                    >
+                      <td className="p-4">
+                        <div className="flex items-center gap-3">
+                          <span className={`inline-flex items-center px-3 py-2 rounded-2xl border font-extrabold ${meta.pill}`}>
+                            {Math.round(r.rating)}★
+                          </span>
 
-                    return (
-                      <tr
-                        key={r.id}
-                        style={{
-                          background: meta.rowBg,
-                          borderLeft: `4px solid ${meta.border}`,
-                        }}
-                      >
-                        <td style={{ padding: '14px 14px' }}>
-                          <div className="d-flex align-items-center gap-2">
-                            <span
-                              className={meta.badge}
-                              style={{
-                                borderRadius: 999,
-                                padding: '8px 10px',
-                                fontWeight: 900,
-                                minWidth: 64,
-                                textAlign: 'center',
-                              }}
-                            >
-                              {Math.round(r.rating)}★
-                            </span>
-
-                            <div>
-                              <div style={{ color: meta.textColor, fontWeight: 900, lineHeight: 1.1 }}>
-                                {stars(r.rating)}
-                              </div>
-                              <div className="text-muted" style={{ fontSize: 12 }}>
-                                {meta.label}
-                              </div>
+                          <div className="flex flex-col">
+                            <div style={{ color: meta.textColor, fontWeight: 900, lineHeight: 1.1 }}>
+                              {stars(r.rating)}
                             </div>
+                            <div className="text-sm opacity-70">{meta.label}</div>
                           </div>
-                        </td>
+                        </div>
+                      </td>
 
-                        <td style={{ padding: '14px 14px' }}>
-                          <div style={{ fontWeight: 650, color: '#111', whiteSpace: 'normal' }}>
-                            {r.text?.trim() ? r.text : '—'}
-                          </div>
-                        </td>
+                      <td className="p-4">
+                        <div className="font-semibold text-slate-900 whitespace-normal">
+                          {r.text?.trim() ? r.text : '—'}
+                        </div>
+                      </td>
 
-                        <td style={{ padding: '14px 14px', fontWeight: 700, color: '#111' }}>
-                          {fmtDateTime(r.createdAt)}
-                        </td>
+                      <td className="p-4 font-semibold">{fmtDateTime(r.createdAt)}</td>
 
-                        <td style={{ padding: '14px 14px' }}>
-                          {r.orderId ? (
-                            <Link
-                              href={`/layout-20/orders/${r.orderId}`}
-                              className="btn btn-sm btn-outline-primary"
-                              style={{ borderRadius: 10 }}
-                            >
-                              Открыть
-                            </Link>
-                          ) : (
-                            <span className="text-muted">—</span>
-                          )}
-                        </td>
-
-                        <td style={{ padding: '14px 14px', fontWeight: 900, color: '#111' }}>
-                          {r.order?.total != null ? fmtMoney(r.order.total) : <span className="text-muted">—</span>}
-                        </td>
-
-                        <td style={{ padding: '14px 14px' }}>
-                          <Link href={`/layout-20/users/${r.userId}`} className="text-primary fw-bold">
-                            {clientName}
+                      <td className="p-4">
+                        {r.orderId ? (
+                          <Link
+                            href={`/layout-20/orders/${r.orderId}`}
+                            className="btn btn-lg btn-light"
+                            style={{ borderRadius: 14 }}
+                            title="Открыть заказ"
+                          >
+                            Открыть
                           </Link>
-                        </td>
+                        ) : (
+                          <span className="opacity-70">—</span>
+                        )}
+                      </td>
 
-                        <td style={{ padding: '14px 14px', fontWeight: 800, color: '#111' }}>
-                          {r.user?.phone ? r.user.phone : <span className="text-muted">—</span>}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+                      <td className="p-4 font-extrabold">
+                        {r.order?.total != null ? fmtMoney(r.order.total) : <span className="opacity-70">—</span>}
+                      </td>
 
-          <div className="text-muted mt-3" style={{ fontSize: 12 }}>
-            Подсказка: клик по клиенту → профиль, кнопка “Открыть” → заказ.
+                      <td className="p-4">
+                        <Link href={`/layout-20/users/${r.userId}`} className="font-extrabold text-blue-700">
+                          {clientName}
+                        </Link>
+                      </td>
+
+                      <td className="p-4 font-semibold">
+                        {r.user?.phone ? r.user.phone : <span className="opacity-70">—</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
           </div>
-        </div>
-      </div>
+        )}
 
-      <div style={{ height: 30 }} />
+        <div className="text-base opacity-70 mt-4">
+          Подсказка: клик по клиенту → профиль, «Открыть» → заказ.
+        </div>
+      </Panel>
+
+      <div style={{ height: 20 }} />
     </div>
   );
 }

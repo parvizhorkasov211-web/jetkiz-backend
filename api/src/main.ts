@@ -1,4 +1,6 @@
 // api/src/main.ts
+import 'reflect-metadata';
+import 'dotenv/config';
 import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
@@ -11,10 +13,12 @@ async function bootstrap() {
   // ✅ гарантируем папки для загрузок
   const uploadsRoot = join(process.cwd(), 'uploads');
   const couriersDir = join(uploadsRoot, 'couriers');
+  const productsDir = join(uploadsRoot, 'products'); // ✅ NEW
 
   try {
     if (!fs.existsSync(uploadsRoot)) fs.mkdirSync(uploadsRoot, { recursive: true });
     if (!fs.existsSync(couriersDir)) fs.mkdirSync(couriersDir, { recursive: true });
+    if (!fs.existsSync(productsDir)) fs.mkdirSync(productsDir, { recursive: true }); // ✅ NEW
   } catch (e) {
     // eslint-disable-next-line no-console
     console.error('Failed to init uploads directories:', e);

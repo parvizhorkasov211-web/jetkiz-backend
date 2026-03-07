@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { LedgerType, OrderStatus, PricingSource, Prisma } from '@prisma/client';
 import { CreateOrderDto } from './dto/create-order.dto';
+import { PromoCodesService } from '../promo-codes/promo-codes.service';
 
 type JwtUser = {
   id: string;
@@ -17,13 +18,15 @@ type JwtUser = {
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly promoCodesService: PromoCodesService,
+  ) {}
 
-  // ✅ унифицируем с RestaurantsService (у тебя там 'main')
   private readonly FIN_CONFIG_ID = 'main';
 
   // ============================================================
-  // ✅ OTD SUPPORT: promisedAt (SLA)
+  // OTD SUPPORT: promisedAt (SLA)
   // ============================================================
   private readonly DEFAULT_PROMISED_MIN = 45;
 
@@ -63,10 +66,60 @@ export class OrdersService {
     }
   }
 
+  private roundMoney(v: any) {
+    return Math.max(0, Math.round(Number(v) || 0));
+  }
+
+  private assertCourierFinanceSnapshot(input: {
+    courierId?: string | null;
+    courierFeeGross?: number | null;
+    courierCommissionPctApplied?: number | null;
+    courierCommissionAmount?: number | null;
+    courierFee?: number | null;
+  }) {
+    if (!input.courierId) {
+      throw new BadRequestException('Courier is not assigned');
+    }
+
+    const gross = this.roundMoney(input.courierFeeGross);
+    const pct = this.roundMoney(input.courierCommissionPctApplied);
+    const commission = this.roundMoney(input.courierCommissionAmount);
+    const net = this.roundMoney(input.courierFee);
+
+    if (gross <= 0) {
+      throw new BadRequestException('Courier gross fee must be greater than 0');
+    }
+
+    if (pct < 0) {
+      throw new BadRequestException('Courier commission percent is invalid');
+    }
+
+    if (commission < 0) {
+      throw new BadRequestException('Courier commission amount is invalid');
+    }
+
+    if (commission > gross) {
+      throw new BadRequestException('Courier commission cannot exceed gross fee');
+    }
+
+    const expectedCommission = this.roundMoney((gross * pct) / 100);
+    if (commission !== expectedCommission) {
+      throw new BadRequestException(
+        `Courier commission mismatch: expected ${expectedCommission}, got ${commission}`,
+      );
+    }
+
+    const expectedNet = Math.max(0, gross - commission);
+    if (net !== expectedNet) {
+      throw new BadRequestException(
+        `Courier payout mismatch: expected ${expectedNet}, got ${net}`,
+      );
+    }
+  }
+
   // ============================================================
   // FINANCE CONFIG (singleton row)
   // ============================================================
-  // ✅ НЕ async: должен возвращать PrismaPromise, чтобы можно было класть в $transaction([])
   private getOrCreateFinanceConfig(): Prisma.Prisma__FinanceConfigClient<{
     id: string;
     clientDeliveryFeeDefault: number;
@@ -106,7 +159,7 @@ export class OrdersService {
   }
 
   // ============================================================
-  // ✅ FINANCE CONFIG API (used by controller)
+  // FINANCE CONFIG API
   // ============================================================
   async getFinanceConfig(user: JwtUser) {
     this.ensureAdmin(user);
@@ -120,6 +173,8 @@ export class OrdersService {
       clientDeliveryFeeWeather?: number;
       courierPayoutDefault?: number;
       courierPayoutWeather?: number;
+      courierCommissionPctDefault?: number;
+      restaurantCommissionPctDefault?: number;
       weatherEnabled?: boolean;
     },
   ) {
@@ -140,10 +195,17 @@ export class OrdersService {
     if (body.courierPayoutWeather != null)
       data.courierPayoutWeather = n(body.courierPayoutWeather);
 
+    if (body.courierCommissionPctDefault != null)
+      data.courierCommissionPctDefault = n(body.courierCommissionPctDefault);
+
+    if (body.restaurantCommissionPctDefault != null)
+      data.restaurantCommissionPctDefault = n(
+        body.restaurantCommissionPctDefault,
+      );
+
     if (body.weatherEnabled != null)
       data.weatherEnabled = Boolean(body.weatherEnabled);
 
-    // гарантируем существование строки
     await this.getOrCreateFinanceConfig();
 
     if (Object.keys(data).length === 0) {
@@ -176,15 +238,26 @@ export class OrdersService {
 
     const orderId = await this.resolveOrderUuid(orderIdOrNumber);
 
-    const fee = Math.max(0, Math.round(Number(deliveryFee) || 0));
+    const fee = this.roundMoney(deliveryFee);
 
     const order = await this.prisma.order.findUnique({
       where: { id: orderId },
-      select: { id: true, subtotal: true },
+      select: {
+        id: true,
+        subtotal: true,
+        discountAmount: true,
+        deliveryDiscountAmount: true,
+      },
     });
     if (!order) throw new NotFoundException('Order not found');
 
-    const total = Math.max(0, Math.round(Number(order.subtotal) || 0)) + fee;
+    const total = Math.max(
+      0,
+      this.roundMoney(order.subtotal) +
+        fee -
+        this.roundMoney(order.discountAmount) -
+        this.roundMoney(order.deliveryDiscountAmount),
+    );
 
     return this.prisma.order.update({
       where: { id: orderId },
@@ -205,6 +278,18 @@ export class OrdersService {
     });
   }
 
+  /**
+   * ЕДИНЫЙ ТАРИФ:
+   * стоимость доставки для клиента берём из того же поля,
+   * которое является базой для courier gross.
+   *
+   * Источник правды:
+   * - courierPayoutDefault
+   * - courierPayoutWeather
+   *
+   * Старые поля clientDeliveryFeeDefault / clientDeliveryFeeWeather
+   * больше не участвуют в расчёте нового заказа.
+   */
   private async computeClientDeliveryFeeApplied(): Promise<{
     deliveryFee: number;
     pricingSource: PricingSource;
@@ -213,29 +298,49 @@ export class OrdersService {
     const weather = Boolean(cfg.weatherEnabled);
 
     const deliveryFee = weather
-      ? cfg.clientDeliveryFeeWeather
-      : cfg.clientDeliveryFeeDefault;
+      ? cfg.courierPayoutWeather
+      : cfg.courierPayoutDefault;
 
     return {
-      deliveryFee: Math.max(0, Math.round(Number(deliveryFee) || 0)),
+      deliveryFee: this.roundMoney(deliveryFee),
       pricingSource: weather
         ? PricingSource.AUTO_WEATHER
         : PricingSource.AUTO_DEFAULT,
     };
   }
 
-  private async computeCourierPayoutApplied(
+  /**
+   * Immutable courier finance snapshot for Order.
+   *
+   * Новое правило:
+   * - общий тариф доставки = базовая стоимость доставки для клиента
+   * - courier gross = этот же тариф
+   * - commission = gross * pct
+   * - courier net = gross - commission
+   *
+   * personalFeeOverride больше не участвует в gross,
+   * чтобы не ломать единую модель "клиент платит X, от X считаем курьера".
+   *
+   * payoutBonusAdd остаётся допустимой отдельной надбавкой.
+   */
+  private async computeCourierFinanceApplied(
     courierUserId: string,
   ): Promise<{
+    courierFeeGross: number;
+    courierCommissionPctApplied: number;
+    courierCommissionAmount: number;
     courierFee: number;
-    bonusApplied: number;
+    courierBonusApplied: number;
     pricingSource: PricingSource;
   }> {
     const [cfg, courier] = await this.prisma.$transaction([
       this.getOrCreateFinanceConfig(),
       this.prisma.courierProfile.findUnique({
         where: { userId: courierUserId },
-        select: { personalFeeOverride: true, payoutBonusAdd: true },
+        select: {
+          payoutBonusAdd: true,
+          courierCommissionPctOverride: true,
+        },
       }),
     ]);
 
@@ -243,25 +348,57 @@ export class OrdersService {
 
     const weather = Boolean(cfg.weatherEnabled);
 
-    let base = weather ? cfg.courierPayoutWeather : cfg.courierPayoutDefault;
-
-    // override действует только когда weather выключен
-    if (!weather && courier.personalFeeOverride != null) {
-      base = courier.personalFeeOverride;
-    }
-
-    const bonus = Math.max(
-      0,
-      Math.round(Number(courier.payoutBonusAdd ?? 0) || 0),
+    const baseDeliveryFee = this.roundMoney(
+      weather ? cfg.courierPayoutWeather : cfg.courierPayoutDefault,
     );
-    const courierFee = Math.max(0, Math.round(Number(base) || 0)) + bonus;
+
+    const bonusApplied = this.roundMoney(courier.payoutBonusAdd ?? 0);
+    const courierFeeGross = baseDeliveryFee + bonusApplied;
+
+    const courierCommissionPctApplied = this.roundMoney(
+      courier.courierCommissionPctOverride ??
+        cfg.courierCommissionPctDefault,
+    );
+
+    const courierCommissionAmount = this.roundMoney(
+      (courierFeeGross * courierCommissionPctApplied) / 100,
+    );
+
+    const courierFee = Math.max(0, courierFeeGross - courierCommissionAmount);
 
     return {
+      courierFeeGross,
+      courierCommissionPctApplied,
+      courierCommissionAmount,
       courierFee,
-      bonusApplied: bonus,
+      courierBonusApplied: bonusApplied,
       pricingSource: weather
         ? PricingSource.AUTO_WEATHER
         : PricingSource.AUTO_DEFAULT,
+    };
+  }
+
+  private async computeRestaurantFinanceApplied(restaurantId: string): Promise<{
+    restaurantCommissionPctApplied: number;
+  }> {
+    const [cfg, restaurant] = await this.prisma.$transaction([
+      this.getOrCreateFinanceConfig(),
+      this.prisma.restaurant.findUnique({
+        where: { id: restaurantId },
+        select: { restaurantCommissionPctOverride: true },
+      }),
+    ]);
+
+    if (!restaurant) {
+      throw new NotFoundException('Restaurant not found');
+    }
+
+    const pct =
+      restaurant.restaurantCommissionPctOverride ??
+      cfg.restaurantCommissionPctDefault;
+
+    return {
+      restaurantCommissionPctApplied: this.roundMoney(pct),
     };
   }
 
@@ -318,58 +455,124 @@ export class OrdersService {
 
     const { deliveryFee, pricingSource } =
       await this.computeClientDeliveryFeeApplied();
-    const total = subtotal + deliveryFee;
 
-    // ✅ promisedAt: пишем в БД даже если Prisma types ещё не обновлены
+    let discountAmount = 0;
+    let deliveryDiscountAmount = 0;
+    let promoCodeId: string | null = null;
+    let promoCode: string | null = null;
+
+    if (dto.promoCode?.trim()) {
+      const promoResult = await this.promoCodesService.validate({
+        code: dto.promoCode,
+        userId,
+        restaurantId: dto.restaurantId,
+        subtotal,
+        deliveryFee,
+      });
+
+      discountAmount = promoResult.pricing.discountAmount;
+      deliveryDiscountAmount = promoResult.pricing.deliveryDiscountAmount;
+      promoCodeId = promoResult.promo.id;
+      promoCode = promoResult.promo.code;
+    }
+
+    const total = Math.max(
+      0,
+      subtotal + deliveryFee - discountAmount - deliveryDiscountAmount,
+    );
+
+    const restaurantFinance =
+      await this.computeRestaurantFinanceApplied(dto.restaurantId);
+
+    const restaurantCommissionAmount = Math.max(
+      0,
+      Math.round(
+        (subtotal * restaurantFinance.restaurantCommissionPctApplied) / 100,
+      ),
+    );
+
+    const restaurantPayoutAmount = Math.max(
+      0,
+      subtotal - restaurantCommissionAmount,
+    );
+
     const createdAt = new Date();
     const promisedAt = this.computePromisedAt(createdAt);
 
-    return this.prisma.order.create({
-      data: {
-        userId,
-        restaurantId: dto.restaurantId,
-        status: OrderStatus.CREATED,
-        subtotal,
-        deliveryFee,
-        total,
+    return this.prisma.$transaction(async (tx) => {
+      const order = await tx.order.create({
+        data: {
+          userId,
+          restaurantId: dto.restaurantId,
+          status: OrderStatus.CREATED,
+          subtotal,
+          deliveryFee,
+          discountAmount,
+          deliveryDiscountAmount,
+          total,
 
-        pricingSource,
-        courierBonusApplied: 0,
+          promoCodeId,
+          promoCode,
 
-        addressId: dto.addressId,
-        phone: dto.phone,
-        comment: dto.comment ?? null,
-        leaveAtDoor: dto.leaveAtDoor,
-        paymentMethod: 'CASH',
-        paymentStatus: 'PENDING',
-        items: { create: itemsCreate },
+          pricingSource,
 
-        createdAt,
+          courierId: null,
+          courierFeeGross: 0,
+          courierCommissionPctApplied: 0,
+          courierCommissionAmount: 0,
+          courierFee: 0,
+          courierBonusApplied: 0,
 
-        // ⚠️ хак для TS (пока не сделал prisma generate)
-        promisedAt,
-      } as any,
-      include: {
-        items: {
-          select: {
-            id: true,
-            productId: true,
-            title: true,
-            price: true,
-            quantity: true,
+          restaurantCommissionPctApplied:
+            restaurantFinance.restaurantCommissionPctApplied,
+          restaurantCommissionAmount,
+          restaurantPayoutAmount,
+
+          addressId: dto.addressId,
+          phone: dto.phone,
+          comment: dto.comment ?? null,
+          leaveAtDoor: dto.leaveAtDoor,
+          paymentMethod: 'CASH',
+          paymentStatus: 'PENDING',
+          items: { create: itemsCreate },
+
+          createdAt,
+          promisedAt,
+        } as any,
+        include: {
+          items: {
+            select: {
+              id: true,
+              productId: true,
+              title: true,
+              price: true,
+              quantity: true,
+            },
+          },
+          restaurant: {
+            select: {
+              id: true,
+              slug: true,
+              nameRu: true,
+              nameKk: true,
+              coverImageUrl: true,
+              status: true,
+            },
           },
         },
-        restaurant: {
-          select: {
-            id: true,
-            slug: true,
-            nameRu: true,
-            nameKk: true,
-            coverImageUrl: true,
-            status: true,
-          },
-        },
-      },
+      });
+
+      if (promoCodeId) {
+        await this.promoCodesService.markUsedTx(tx, {
+          promoCodeId,
+          userId,
+          orderId: order.id,
+          discountAmount,
+          deliveryDiscountAmount,
+        });
+      }
+
+      return order;
     });
   }
 
@@ -395,8 +598,15 @@ export class OrdersService {
           total: true,
           paymentStatus: true,
           courierId: true,
+          courierFeeGross: true,
+          courierCommissionPctApplied: true,
+          courierCommissionAmount: true,
           courierFee: true,
           deliveryFee: true,
+          restaurantPayoutAmount: true,
+          restaurantCommissionAmount: true,
+          restaurantCommissionPctApplied: true,
+          restaurantPayoutId: true,
           restaurant: {
             select: {
               id: true,
@@ -422,8 +632,15 @@ export class OrdersService {
       paymentStatus: o.paymentStatus,
       restaurant: o.restaurant,
       courierId: o.courierId,
+      courierFeeGross: o.courierFeeGross,
+      courierCommissionPctApplied: o.courierCommissionPctApplied,
+      courierCommissionAmount: o.courierCommissionAmount,
       courierFee: o.courierFee,
       deliveryFee: o.deliveryFee,
+      restaurantPayoutAmount: o.restaurantPayoutAmount,
+      restaurantCommissionAmount: o.restaurantCommissionAmount,
+      restaurantCommissionPctApplied: o.restaurantCommissionPctApplied,
+      restaurantPayoutId: o.restaurantPayoutId,
       itemsCount: o.items.length,
       previewItems: o.items.slice(0, 2),
     }));
@@ -453,6 +670,8 @@ export class OrdersService {
         status: true,
         subtotal: true,
         deliveryFee: true,
+        discountAmount: true,
+        deliveryDiscountAmount: true,
         total: true,
         addressId: true,
         phone: true,
@@ -464,10 +683,17 @@ export class OrdersService {
         pricingSource: true,
         courierBonusApplied: true,
         courierId: true,
+        courierFeeGross: true,
+        courierCommissionPctApplied: true,
+        courierCommissionAmount: true,
         courierFee: true,
         assignedAt: true,
         pickedUpAt: true,
         deliveredAt: true,
+        restaurantCommissionPctApplied: true,
+        restaurantCommissionAmount: true,
+        restaurantPayoutAmount: true,
+        restaurantPayoutId: true,
         createdAt: true,
         updatedAt: true,
         items: {
@@ -549,6 +775,9 @@ export class OrdersService {
           total: true,
           paymentStatus: true,
           deliveryFee: true,
+          courierFeeGross: true,
+          courierCommissionPctApplied: true,
+          courierCommissionAmount: true,
           courierFee: true,
           pricingSource: true,
           courierBonusApplied: true,
@@ -556,6 +785,10 @@ export class OrdersService {
           assignedAt: true,
           pickedUpAt: true,
           deliveredAt: true,
+          restaurantCommissionPctApplied: true,
+          restaurantCommissionAmount: true,
+          restaurantPayoutAmount: true,
+          restaurantPayoutId: true,
           restaurant: {
             select: {
               id: true,
@@ -589,9 +822,16 @@ export class OrdersService {
       total: o.total,
       paymentStatus: o.paymentStatus,
       deliveryFee: o.deliveryFee,
+      courierFeeGross: o.courierFeeGross,
+      courierCommissionPctApplied: o.courierCommissionPctApplied,
+      courierCommissionAmount: o.courierCommissionAmount,
       courierFee: o.courierFee,
       pricingSource: o.pricingSource,
       courierBonusApplied: o.courierBonusApplied,
+      restaurantCommissionPctApplied: o.restaurantCommissionPctApplied,
+      restaurantCommissionAmount: o.restaurantCommissionAmount,
+      restaurantPayoutAmount: o.restaurantPayoutAmount,
+      restaurantPayoutId: o.restaurantPayoutId,
       user: o.user,
       restaurant: o.restaurant,
       courierId: o.courierId,
@@ -622,6 +862,8 @@ export class OrdersService {
         status: true,
         subtotal: true,
         deliveryFee: true,
+        discountAmount: true,
+        deliveryDiscountAmount: true,
         total: true,
         addressId: true,
         phone: true,
@@ -633,10 +875,17 @@ export class OrdersService {
         pricingSource: true,
         courierBonusApplied: true,
         courierId: true,
+        courierFeeGross: true,
+        courierCommissionPctApplied: true,
+        courierCommissionAmount: true,
         courierFee: true,
         assignedAt: true,
         pickedUpAt: true,
         deliveredAt: true,
+        restaurantCommissionPctApplied: true,
+        restaurantCommissionAmount: true,
+        restaurantPayoutAmount: true,
+        restaurantPayoutId: true,
         createdAt: true,
         updatedAt: true,
         user: {
@@ -691,7 +940,6 @@ export class OrdersService {
     if (role === 'CLIENT')
       throw new ForbiddenException('Clients cannot change order status');
 
-    // ⚠️ promisedAt может не быть в типах Prisma → берём order как any
     const order: any = await this.prisma.order.findUnique({
       where: { id: orderId },
       select: {
@@ -699,15 +947,20 @@ export class OrdersService {
         status: true,
         restaurantId: true,
         courierId: true,
+        courierFeeGross: true,
+        courierCommissionPctApplied: true,
+        courierCommissionAmount: true,
+        courierFee: true,
         createdAt: true,
-        promisedAt: true, // (если в типах нет — не падаем, т.к. order:any)
+        promisedAt: true,
       } as any,
     });
 
     if (!order) throw new NotFoundException('Order not found');
 
     if (role === 'RESTAURANT') {
-      if (!user.restaurantId) throw new ForbiddenException('restaurantId missing');
+      if (!user.restaurantId)
+        throw new ForbiddenException('restaurantId missing');
       if (order.restaurantId !== user.restaurantId)
         throw new NotFoundException('Order not found');
     }
@@ -737,11 +990,29 @@ export class OrdersService {
       );
     }
 
+    if (
+      (next === OrderStatus.ON_THE_WAY || next === OrderStatus.DELIVERED) &&
+      !order.courierId
+    ) {
+      throw new BadRequestException(
+        'Courier must be assigned before delivery flow',
+      );
+    }
+
+    if (next === OrderStatus.ON_THE_WAY || next === OrderStatus.DELIVERED) {
+      this.assertCourierFinanceSnapshot({
+        courierId: order.courierId,
+        courierFeeGross: order.courierFeeGross,
+        courierCommissionPctApplied: order.courierCommissionPctApplied,
+        courierCommissionAmount: order.courierCommissionAmount,
+        courierFee: order.courierFee,
+      });
+    }
+
     const data: any = { status: next };
     if (next === OrderStatus.ON_THE_WAY) data.pickedUpAt = new Date();
     if (next === OrderStatus.DELIVERED) data.deliveredAt = new Date();
 
-    // ✅ backfill promisedAt для старых заказов
     if (!order.promisedAt && next !== OrderStatus.CANCELED) {
       data.promisedAt = this.computePromisedAt(order.createdAt);
     }
@@ -763,7 +1034,11 @@ export class OrdersService {
       if (next === OrderStatus.DELIVERED) {
         const o = await tx.order.findUnique({
           where: { id: orderId },
-          select: { id: true, courierId: true, courierFee: true },
+          select: {
+            id: true,
+            courierId: true,
+            courierFee: true,
+          },
         });
 
         if (o?.courierId && (o.courierFee ?? 0) > 0) {
@@ -832,22 +1107,38 @@ export class OrdersService {
     });
     if (!courier) throw new NotFoundException('Courier not found');
 
-    const payout = await this.computeCourierPayoutApplied(courier.userId);
+    const finance = await this.computeCourierFinanceApplied(courier.userId);
+
+    this.assertCourierFinanceSnapshot({
+      courierId: courier.userId,
+      courierFeeGross: finance.courierFeeGross,
+      courierCommissionPctApplied: finance.courierCommissionPctApplied,
+      courierCommissionAmount: finance.courierCommissionAmount,
+      courierFee: finance.courierFee,
+    });
+
+    const now = new Date();
 
     return this.prisma.$transaction(async (tx) => {
       const updated = await tx.order.update({
         where: { id: orderId },
         data: {
           courierId: courier.userId,
-          courierFee: payout.courierFee,
-          courierBonusApplied: payout.bonusApplied,
-          pricingSource: payout.pricingSource,
-          assignedAt: new Date(),
+          courierFeeGross: finance.courierFeeGross,
+          courierCommissionPctApplied: finance.courierCommissionPctApplied,
+          courierCommissionAmount: finance.courierCommissionAmount,
+          courierFee: finance.courierFee,
+          courierBonusApplied: finance.courierBonusApplied,
+          pricingSource: finance.pricingSource,
+          assignedAt: now,
         },
         select: {
           id: true,
           number: true,
           courierId: true,
+          courierFeeGross: true,
+          courierCommissionPctApplied: true,
+          courierCommissionAmount: true,
           courierFee: true,
           courierBonusApplied: true,
           pricingSource: true,
@@ -857,7 +1148,7 @@ export class OrdersService {
 
       await tx.courierProfile.update({
         where: { userId: courier.userId },
-        data: { lastAssignedAt: new Date(), lastActiveAt: new Date() },
+        data: { lastAssignedAt: now, lastActiveAt: now },
       });
 
       return updated;
@@ -885,6 +1176,9 @@ export class OrdersService {
       where: { id: orderId },
       data: {
         courierId: null,
+        courierFeeGross: 0,
+        courierCommissionPctApplied: 0,
+        courierCommissionAmount: 0,
         courierFee: 0,
         courierBonusApplied: 0,
         assignedAt: null,
@@ -893,6 +1187,9 @@ export class OrdersService {
         id: true,
         number: true,
         courierId: true,
+        courierFeeGross: true,
+        courierCommissionPctApplied: true,
+        courierCommissionAmount: true,
         courierFee: true,
         courierBonusApplied: true,
         assignedAt: true,
@@ -901,7 +1198,7 @@ export class OrdersService {
   }
 
   // ============================================================
-  // ✅ AUTO ASSIGN (used by controller)
+  // AUTO ASSIGN
   // ============================================================
   async autoAssignCourier(user: JwtUser, orderIdOrNumber: string) {
     this.ensureAdmin(user);
@@ -927,7 +1224,6 @@ export class OrdersService {
     const courier = await this.pickBestCourier();
     if (!courier) throw new BadRequestException('No online couriers');
 
-    // assignCourier требует courierUserId
     return this.assignCourier(user, orderId, courier.userId);
   }
 
@@ -935,7 +1231,6 @@ export class OrdersService {
   // DISPATCHER (no geo)
   // ============================================================
   private async pickBestCourier(): Promise<{ userId: string } | null> {
-    // 1) берём онлайн + активных (User.isActive)
     const couriers = await this.prisma.courierProfile.findMany({
       where: {
         isOnline: true,
@@ -953,8 +1248,6 @@ export class OrdersService {
 
     const courierIds = couriers.map((c) => c.userId);
 
-    // 2) считаем активные заказы через Order (не храним поле в CourierProfile)
-    // Активные = всё, кроме DELIVERED/CANCELED
     const grouped = await this.prisma.order.groupBy({
       by: ['courierId'],
       where: {
@@ -969,8 +1262,6 @@ export class OrdersService {
       if (g.courierId) activeCountMap.set(g.courierId, g._count._all);
     }
 
-    // 3) меньше активных заказов — лучше; если равно — кто давно не назначался;
-    // потом кто активнее/seen
     const sorted = [...couriers].sort((a, b) => {
       const la = activeCountMap.get(a.userId) ?? 0;
       const lb = activeCountMap.get(b.userId) ?? 0;

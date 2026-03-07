@@ -9,11 +9,11 @@ import { RestaurantStatus } from '@prisma/client';
 export class CreateRestaurantDto {
   @IsString()
   @MinLength(1)
-  nameRu: string;
+  nameRu!: string;
 
   @IsString()
   @MinLength(1)
-  nameKk: string;
+  nameKk!: string;
 
   @IsOptional()
   @IsString()

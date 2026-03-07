@@ -4,7 +4,7 @@ export class CreateCourierDto {
   @IsString()
   @IsNotEmpty()
   // +7XXXXXXXXXX (Казахстан/РФ формат для старта)
-  @Matches(/^\+\d{10,15}$/, { message: 'phone must be like +7XXXXXXXXXX' })
+ @Matches(/^\+?\d{10,15}$/, { message: 'phone must be like +77081234567' })
   phone!: string;
 
   @IsString()

@@ -14,7 +14,7 @@ export class RestaurantReviewsController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('includeUser') includeUser?: string,
-    @Query('includeOrder') includeOrder?: string,
+    @Query('includeOrder') includeOrder?: string, // поддерживаем параметр, но сервис его игнорирует
   ) {
     return this.service.getRestaurantReviews({
       restaurantId,

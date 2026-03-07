@@ -579,13 +579,13 @@ export default function RestaurantDetailsPage() {
     repeatRate: metrics?.customers?.repeatRatePercent ?? 0,
   };
 
-  // ✅ корректный маршрут на страницу отзывов (общая страница + фильтр restaurantId)
+  // ✅ маршрут на страницу отзывов внутри ресторана + проброс периода
   const reviewsUrl = useMemo(() => {
     const sp = new URLSearchParams();
-    sp.set('restaurantId', id);
     if (from) sp.set('from', from);
     if (to) sp.set('to', to);
-    return `/layout-20/restaurants/reviews?${sp.toString()}`;
+    const qs = sp.toString();
+    return `/layout-20/restaurants/${id}/reviews${qs ? `?${qs}` : ''}`;
   }, [id, from, to]);
 
   // ✅ маршрут на меню ресторана
@@ -604,7 +604,7 @@ export default function RestaurantDetailsPage() {
         variant="reviews"
         icon="★"
         label="Отзывы"
-        sublabel="рейтинг и комментарии"
+        sublabel={`рейтинг и комментарии · ${safe.reviewsCount}`}
         onClick={() => router.push(reviewsUrl)}
       />
     </div>
@@ -669,7 +669,7 @@ export default function RestaurantDetailsPage() {
             </div>
           </Panel>
 
-          {/* ✅ FIXED: Период аналитики - теперь аккуратно, ясно, кликабельно */}
+          {/* ✅ FIXED: Период аналитики */}
           <Panel
             title={
               <div className="flex items-center gap-3 flex-wrap">

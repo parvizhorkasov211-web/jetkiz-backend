@@ -1,4 +1,3 @@
-// api/src/couriers/couriers.controller.ts
 import {
   Body,
   Controller,
@@ -13,11 +12,14 @@ import {
   UseInterceptors,
   BadRequestException,
 } from '@nestjs/common';
+
 import { CouriersService } from './couriers.service';
 import { JwtAuthGuard } from '../auth/jwt.guard';
+
 import { CreateCourierDto } from './dto/create-courier.dto';
 import { UpdateCourierProfileDto } from './dto/update-courier-profile.dto';
 import { BlockCourierDto } from './dto/block-courier.dto';
+
 import { FileInterceptor } from '@nestjs/platform-express';
 import { diskStorage } from 'multer';
 import { extname } from 'path';
@@ -34,7 +36,6 @@ declare global {
         destination: string;
         filename: string;
         path: string;
-        buffer?: any;
       }
     }
   }
@@ -121,7 +122,7 @@ export class CouriersController {
       storage: diskStorage({
         destination: 'uploads/couriers',
         filename: (req, file, cb) => {
-          const userId = req?.user?.id || 'unknown';
+          const userId = (req as any)?.user?.id || 'unknown';
           const ext = safeExt(file.originalname);
           cb(null, `${userId}-${Date.now()}${ext}`);
         },
@@ -167,11 +168,10 @@ export class CouriersController {
     return this.couriers.createCourier(req.user, dto);
   }
 
-  @Get(':id')
-  getOne(@Req() req: any, @Param('id') id: string) {
-    return this.couriers.getCourierAdminById(req.user, id);
-  }
-
+ @Get(':id')
+getOne(@Req() req: any, @Param('id') id: string) {
+  return this.couriers.getCourierAdminById(req.user, id);
+}
   @Post(':id/avatar')
   @UseInterceptors(
     FileInterceptor('file', {
@@ -292,4 +292,16 @@ export class CouriersController {
       fee: fee === null ? null : Math.round(fee),
     });
   }
+@Post("me/location")
+updateMyLocation(
+ @Req() req:any,
+ @Body() body:{lat:number,lng:number}
+){
+ return this.couriers.updateCourierLocation(req.user,body)
 }
+
+@Get('map')
+getMapCouriers(@Req() req: any) {
+  const user = req.user ?? { id: 'dev', role: req.headers['x-dev-role'] || 'ADMIN' };
+ return this.couriers.getMapCouriers(user);
+}}

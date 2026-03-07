@@ -6,9 +6,13 @@ import { AuthModule } from './auth/auth.module';
 import { UsersModule } from './users/users.module';
 
 import { CouriersModule } from './couriers/couriers.module';
+import { CouriersMapModule } from './couriers-map/couriers-map.module';
 import { CourierMetricsModule } from './courier-metrics/courier-metrics.module';
+import { TrackingModule } from './tracking/tracking.module';
 
 import { OrdersModule } from './orders/orders.module';
+import { PromoCodesModule } from './promo-codes/promo-codes.module';
+import { FinanceModule } from './finance/finance.module';
 
 import { RestaurantsModule } from './restaurants/restaurants.module';
 import { RestaurantMenuModule } from './restaurant-menu/restaurant-menu.module';
@@ -32,11 +36,15 @@ import { AppService } from './app.service';
     UsersModule,
 
     // COURIERS
+    CouriersMapModule,
     CouriersModule,
     CourierMetricsModule,
+    TrackingModule,
 
-    // ORDERS
+    // ORDERS & FINANCE
     OrdersModule,
+    PromoCodesModule,
+    FinanceModule,
 
     // RESTAURANTS
     RestaurantsModule,

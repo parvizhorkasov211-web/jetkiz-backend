@@ -1,4 +1,3 @@
-// src/couriers/couriers.service.ts
 import {
   BadRequestException,
   ForbiddenException,
@@ -6,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { TrackingGateway } from '../tracking/tracking.gateway';
 import * as bcrypt from 'bcryptjs';
 import { LedgerType, OrderStatus } from '@prisma/client';
 import { UpdateCourierProfileDto } from './dto/update-courier-profile.dto';
@@ -93,7 +93,10 @@ function buildOnlineStatsMap(
 
 @Injectable()
 export class CouriersService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly trackingGateway: TrackingGateway,
+  ) {}
 
   private ensureAdmin(u: JwtUser) {
     if ((u.role ?? 'CLIENT') !== 'ADMIN') {
@@ -102,62 +105,83 @@ export class CouriersService {
   }
 
   // =========================
-  // ✅ TARIFF (public)
+  // ✅ GLOBAL DEFAULT TARIFF
+  // ЕДИНЫЙ ИСТОЧНИК ПРАВДЫ:
+  // financeConfig.courierPayoutDefault
+  //
+  // По новой бизнес-логике это:
+  // - стоимость доставки для клиента
+  // - gross база для курьера
   // =========================
   async getActiveTariffPublic(user: JwtUser) {
-    const t = await this.prisma.courierTariff.findFirst({
-      where: { isActive: true },
-      orderBy: { createdAt: 'desc' },
+    this.ensureAdmin(user);
+
+    const cfg = await this.prisma.financeConfig.findFirst({
+      orderBy: { updatedAt: 'desc' },
       select: {
         id: true,
-        fee: true,
-        isActive: true,
-        startsAt: true,
-        endsAt: true,
+        courierPayoutDefault: true,
+        updatedAt: true,
       },
     });
 
-    return t ?? { id: null, fee: 0, isActive: false };
+    const fee = Math.max(
+      0,
+      Math.round(Number(cfg?.courierPayoutDefault ?? 0) || 0),
+    );
+
+    return {
+      id: cfg?.id ?? 'main',
+      fee,
+      isActive: true,
+      startsAt: cfg?.updatedAt ?? null,
+      endsAt: null,
+      meaning: 'GLOBAL_DELIVERY_TARIFF',
+    };
   }
 
-  // =========================
-  // ✅ TARIFF (admin)
-  // =========================
   async setGlobalTariff(user: JwtUser, body: { fee: number }) {
     this.ensureAdmin(user);
 
     const fee = Math.max(0, Math.round(Number(body?.fee) || 0));
     if (!fee) throw new BadRequestException('fee must be > 0');
 
-    await this.prisma.$transaction([
-      this.prisma.courierTariff.updateMany({
-        where: { isActive: true },
-        data: { isActive: false, endsAt: new Date() },
-      }),
-      this.prisma.courierTariff.create({
+    const existing = await this.prisma.financeConfig.findFirst({
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
+    });
+
+    if (existing?.id) {
+      await this.prisma.financeConfig.update({
+        where: { id: existing.id },
         data: {
-          fee,
-          isActive: true,
-          startsAt: new Date(),
-          endsAt: null,
+          // единый тариф доставки
+          courierPayoutDefault: fee,
         },
         select: { id: true },
-      }),
-    ]);
+      });
+    } else {
+      await this.prisma.financeConfig.create({
+        data: {
+          id: 'main',
+          courierPayoutDefault: fee,
+        },
+        select: { id: true },
+      });
+    }
 
     return this.getActiveTariffPublic(user);
   }
 
   // =========================
   // ✅ GLOBAL COMMISSION DEFAULT (admin)
+  // Source of truth: financeConfig.courierCommissionPctDefault
   // =========================
   async getGlobalCommissionDefault(user: JwtUser) {
     this.ensureAdmin(user);
 
-    // дефолт, если записи ещё нет
     const DEFAULT_PCT = 15;
 
-    // Важно: в FinanceConfig нет createdAt (есть только updatedAt), поэтому сортируем по updatedAt
     const cfg = await this.prisma.financeConfig.findFirst({
       orderBy: { updatedAt: 'desc' },
       select: {
@@ -184,7 +208,6 @@ export class CouriersService {
       throw new BadRequestException('pct must be between 0 and 100');
     }
 
-    // Важно: в FinanceConfig нет createdAt (есть только updatedAt)
     const existing = await this.prisma.financeConfig.findFirst({
       orderBy: { updatedAt: 'desc' },
       select: { id: true },
@@ -197,7 +220,6 @@ export class CouriersService {
         select: { id: true },
       });
     } else {
-      // FinanceConfig.id обязателен (в схеме нет default) — создаём одну запись с фиксированным id
       await this.prisma.financeConfig.create({
         data: { id: 'main', courierCommissionPctDefault: pct },
         select: { id: true },
@@ -209,6 +231,9 @@ export class CouriersService {
 
   // =========================
   // ✅ PERSONAL FEE (admin)
+  //
+  // Сохраняем поле для совместимости данных/UI,
+  // но в новой модели оно не должно влиять на courier gross.
   // =========================
   async setCourierPersonalFeeOverride(
     user: JwtUser,
@@ -357,7 +382,10 @@ export class CouriersService {
     this.ensureAdmin(user);
 
     const page = Math.max(1, Math.trunc(Number(opts.page) || 1));
-    const limit = Math.max(1, Math.min(200, Math.trunc(Number(opts.limit) || 20)));
+    const limit = Math.max(
+      1,
+      Math.min(200, Math.trunc(Number(opts.limit) || 20)),
+    );
     const skip = (page - 1) * limit;
     const take = limit;
 
@@ -412,7 +440,7 @@ export class CouriersService {
               blockReason: true,
               personalFeeOverride: true,
               payoutBonusAdd: true,
-              courierCommissionPctOverride: true, // ✅
+              courierCommissionPctOverride: true,
               addressText: true,
               comment: true,
               createdAt: true,
@@ -455,7 +483,9 @@ export class CouriersService {
 
         const lastSeenAt = p?.lastSeenAt ? new Date(p.lastSeenAt) : null;
         const lastActiveAt = p?.lastActiveAt ? new Date(p.lastActiveAt) : null;
-        const lastAssignedAt = p?.lastAssignedAt ? new Date(p.lastAssignedAt) : null;
+        const lastAssignedAt = p?.lastAssignedAt
+          ? new Date(p.lastAssignedAt)
+          : null;
 
         const st = statsMap.get(u.id);
         const lastOnlineAt = st?.lastOnlineAt ?? null;
@@ -484,7 +514,8 @@ export class CouriersService {
           personalFeeOverride: p?.personalFeeOverride ?? null,
           payoutBonusAdd: p?.payoutBonusAdd ?? null,
 
-          courierCommissionPctOverride: p?.courierCommissionPctOverride ?? null, // ✅
+          courierCommissionPctOverride:
+            p?.courierCommissionPctOverride ?? null,
 
           lastSeenAt: p?.lastSeenAt ?? null,
           lastActiveAt: p?.lastActiveAt ?? null,
@@ -551,7 +582,7 @@ export class CouriersService {
             blockedAt: null,
             blockReason: null,
             personalFeeOverride: null,
-            payoutBonusAdd: null,
+            payoutBonusAdd: 0,
             addressText: null,
             comment: null,
             courierCommissionPctOverride: null,
@@ -601,7 +632,8 @@ export class CouriersService {
       },
     });
 
-    if (!u || !u.courierProfile) throw new NotFoundException('Courier not found');
+    if (!u || !u.courierProfile)
+      throw new NotFoundException('Courier not found');
 
     const activeOrder = await this.prisma.order.findFirst({
       where: {
@@ -650,7 +682,8 @@ export class CouriersService {
       isOnline: u.courierProfile.isOnline ?? false,
       personalFeeOverride: u.courierProfile.personalFeeOverride ?? null,
       payoutBonusAdd: u.courierProfile.payoutBonusAdd ?? null,
-      courierCommissionPctOverride: u.courierProfile.courierCommissionPctOverride ?? null,
+      courierCommissionPctOverride:
+        u.courierProfile.courierCommissionPctOverride ?? null,
 
       lastSeenAt: u.courierProfile.lastSeenAt ?? null,
       lastActiveAt: u.courierProfile.lastActiveAt ?? null,
@@ -665,8 +698,9 @@ export class CouriersService {
   // ✅ UPLOAD AVATAR (me/admin)
   // =========================
   async uploadMyAvatar(user: JwtUser, file?: Express.Multer.File) {
-    if ((user.role ?? 'CLIENT') !== 'COURIER')
+    if ((user.role ?? 'CLIENT') !== 'COURIER') {
       throw new ForbiddenException('Only courier');
+    }
     if (!file) throw new BadRequestException('file is required');
 
     const url = `/${file.path.replace(/\\/g, '/')}`;
@@ -718,15 +752,23 @@ export class CouriersService {
     if (dto.firstName != null) data.firstName = String(dto.firstName).trim();
     if (dto.lastName != null) data.lastName = String(dto.lastName).trim();
     if (dto.iin != null) data.iin = String(dto.iin).trim();
-    if (dto.addressText !== undefined)
-      data.addressText = dto.addressText ? String(dto.addressText).trim() : null;
-    if (dto.comment !== undefined) data.comment = dto.comment ? String(dto.comment).trim() : null;
+    if (dto.addressText !== undefined) {
+      data.addressText = dto.addressText
+        ? String(dto.addressText).trim()
+        : null;
+    }
+    if (dto.comment !== undefined) {
+      data.comment = dto.comment ? String(dto.comment).trim() : null;
+    }
 
     if ((dto as any).personalFeeOverride !== undefined) {
       data.personalFeeOverride =
         (dto as any).personalFeeOverride === null
           ? null
-          : Math.max(0, Math.trunc(Number((dto as any).personalFeeOverride) || 0));
+          : Math.max(
+              0,
+              Math.trunc(Number((dto as any).personalFeeOverride) || 0),
+            );
     }
 
     if ((dto as any).payoutBonusAdd !== undefined) {
@@ -736,7 +778,6 @@ export class CouriersService {
           : Math.max(0, Math.trunc(Number((dto as any).payoutBonusAdd) || 0));
     }
 
-    // поддержка нового поля в профиле, если DTO уже обновлён
     if ((dto as any).courierCommissionPctOverride !== undefined) {
       const v = (dto as any).courierCommissionPctOverride;
       data.courierCommissionPctOverride =
@@ -827,7 +868,12 @@ export class CouriersService {
   }
 
   // =========================
-  // ✅ ASSIGN/UNASSIGN ORDER (admin)
+  // ✅ ASSIGN/UNASSIGN ORDER (legacy admin)
+  //
+  // ВНИМАНИЕ:
+  // Этот метод только ставит courierId.
+  // Финансовый snapshot здесь не считается.
+  // Для правильного order flow используй /orders/:id/assign-courier.
   // =========================
   async assignOrderToCourier(user: JwtUser, courierUserId: string, body: any) {
     this.ensureAdmin(user);
@@ -921,12 +967,10 @@ export class CouriersService {
       take: 5000,
     });
 
-    // "Доход" курьера — всё, что увеличивает баланс курьера (кроме PAYOUT, который уменьшает)
     const incomeTypes: LedgerType[] = [
       LedgerType.ORDER_PAYOUT,
       LedgerType.BONUS,
       LedgerType.MANUAL_ADJUSTMENT,
-      // PENALTY и SERVICE_COMMISSION обычно уменьшают, поэтому не включаем
     ];
 
     let totalIncome = 0;
@@ -950,7 +994,10 @@ export class CouriersService {
     await this.getCourierOrThrow(courierUserId);
 
     const page = Math.max(1, Math.trunc(Number(opts?.page) || 1));
-    const limit = Math.max(1, Math.min(200, Math.trunc(Number(opts?.limit) || 50)));
+    const limit = Math.max(
+      1,
+      Math.min(200, Math.trunc(Number(opts?.limit) || 50)),
+    );
     const skip = (page - 1) * limit;
 
     const from = opts?.from ? safeDate(opts.from) : null;
@@ -1003,9 +1050,9 @@ export class CouriersService {
 
     await this.getCourierOrThrow(courierUserId);
 
-    // API может присылать commissionPctOverride (как у тебя в контроллере)
     const v = body?.commissionPctOverride ?? body?.courierCommissionPctOverride;
-    const pct = v == null ? null : Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
+    const pct =
+      v == null ? null : Math.max(0, Math.min(100, Math.round(Number(v) || 0)));
 
     const updated = await this.prisma.courierProfile.update({
       where: { userId: courierUserId },
@@ -1014,5 +1061,94 @@ export class CouriersService {
     });
 
     return updated;
+  }
+
+  async updateCourierLocation(
+    user: JwtUser,
+    body: { lat: number; lng: number },
+  ) {
+    if ((user.role ?? 'CLIENT') !== 'COURIER') {
+      throw new ForbiddenException('Only courier');
+    }
+
+    console.log('updateCourierLocation called:', {
+      userId: user.id,
+      role: user.role,
+      lat: body?.lat,
+      lng: body?.lng,
+    });
+
+    const lat = Number(body?.lat);
+    const lng = Number(body?.lng);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      throw new BadRequestException('Invalid coordinates');
+    }
+
+    await this.getCourierOrThrow(user.id);
+
+    const updated = await this.prisma.courierProfile.update({
+      where: { userId: user.id },
+      data: {
+        lat,
+        lng,
+        lastSeenAt: new Date(),
+        lastActiveAt: new Date(),
+      },
+      select: {
+        userId: true,
+        lat: true,
+        lng: true,
+        isOnline: true,
+        lastSeenAt: true,
+      },
+    });
+
+    console.log('emitCourierLocation sending:', {
+      courierId: updated.userId,
+      lat: Number(updated.lat),
+      lng: Number(updated.lng),
+      isOnline: updated.isOnline ?? false,
+      lastSeenAt: updated.lastSeenAt,
+    });
+
+    this.trackingGateway.emitCourierLocation({
+      courierId: updated.userId,
+      userId: updated.userId,
+      lat: Number(updated.lat),
+      lng: Number(updated.lng),
+      isOnline: updated.isOnline ?? false,
+      lastSeenAt: updated.lastSeenAt,
+      activeOrderId: null,
+    });
+
+    return updated;
+  }
+
+  async getMapCouriers(user: JwtUser) {
+    if ((user.role ?? 'CLIENT') !== 'ADMIN') {
+      throw new ForbiddenException('Only admin');
+    }
+
+    console.log('GET MAP COURIERS CALLED');
+
+    const rows = await this.prisma.courierProfile.findMany({
+      where: {
+        isOnline: true,
+        lat: { not: null },
+        lng: { not: null },
+      },
+      select: {
+        userId: true,
+        lat: true,
+        lng: true,
+        lastSeenAt: true,
+        isOnline: true,
+      },
+    });
+
+    console.log('MAP ROWS:', rows);
+
+    return rows;
   }
 }

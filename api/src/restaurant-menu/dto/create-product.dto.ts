@@ -1,4 +1,4 @@
-import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Min, IsArray, ArrayMaxSize } from 'class-validator';
 
 export class CreateProductDto {
   @IsString()
@@ -32,4 +32,15 @@ export class CreateProductDto {
   @IsOptional()
   @IsBoolean()
   isDrink?: boolean;
+
+  // ✅ NEW: 1 главное фото (URL)
+  @IsOptional()
+  @IsString()
+  mainImageUrl?: string | null;
+
+  // ✅ NEW: до 10 доп фото (URLs)
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(10)
+  additionalImageUrls?: string[] | null;
 }

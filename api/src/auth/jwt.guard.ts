@@ -16,21 +16,26 @@ export class JwtAuthGuard extends AuthGuard('jwt') {
     // DEV MODE: полностью отключаем JWT
     // ================================
     if (process.env.AUTH_DISABLED === 'true') {
-      // Подставляем "админа", чтобы сервисы не ломались
+      // Можно задавать роль для теста:
+      // По умолчанию ADMIN, но можно передать заголовок:
+      // x-dev-role: COURIER
+      const devRole = String(req.headers['x-dev-role'] ?? 'ADMIN').toUpperCase();
+
       req.user = {
-        id: 'dev-admin',
-        role: 'ADMIN',
+        id: devRole === 'COURIER' ? 'dev-courier' : 'dev-admin',
+        role: devRole === 'COURIER' ? 'COURIER' : 'ADMIN',
       };
+
       return true;
     }
 
     // ================================
     // Если метод/контроллер помечен @Public()
     // ================================
-    const isPublic = this.reflector.getAllAndOverride<boolean>(
-      IS_PUBLIC_KEY,
-      [context.getHandler(), context.getClass()],
-    );
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
 
     if (isPublic) {
       return true;

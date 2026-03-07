@@ -38,11 +38,14 @@ export const MENU_SIDEBAR_MAIN: MenuConfig = [
         path: `${L20}/restaurants`,
         icon: Store
       },
-      {
-        title: "Курьеры",
-        path: `${L20}/couriers`,
-        icon: Bike
-      },
+     {
+  title: "Курьеры",
+  path: "/layout-20/couriers",
+},
+{
+  title: "Карта курьеров",
+  path: "/layout-20/couriers/map",
+},
       {
         title: "Промокоды",
         path: `${L20}/promocodes`,
