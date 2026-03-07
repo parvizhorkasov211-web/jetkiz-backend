@@ -1,0 +1,57 @@
+import { Module } from '@nestjs/common';
+
+import { PrismaModule } from './prisma/prisma.module';
+
+import { AuthModule } from './auth/auth.module';
+import { UsersModule } from './users/users.module';
+
+import { CouriersModule } from './couriers/couriers.module';
+import { CourierMetricsModule } from './courier-metrics/courier-metrics.module';
+
+import { OrdersModule } from './orders/orders.module';
+
+import { RestaurantsModule } from './restaurants/restaurants.module';
+import { RestaurantMenuModule } from './restaurant-menu/restaurant-menu.module';
+import { RestaurantMetricsModule } from './restaurant-metrics/restaurant-metrics.module';
+import { RestaurantReviewsModule } from './restaurant-reviews/restaurant-reviews.module';
+
+import { ClientMetricsModule } from './client-metrics/client-metrics.module';
+import { ClientReviewsModule } from './client-reviews/client-reviews.module';
+
+import { FoodCategoriesModule } from './food-categories/food-categories.module';
+
+import { AppController } from './app.controller';
+import { AppService } from './app.service';
+
+@Module({
+  imports: [
+    PrismaModule,
+
+    // AUTH & USERS
+    AuthModule,
+    UsersModule,
+
+    // COURIERS
+    CouriersModule,
+    CourierMetricsModule,
+
+    // ORDERS
+    OrdersModule,
+
+    // RESTAURANTS
+    RestaurantsModule,
+    RestaurantMenuModule,
+    RestaurantMetricsModule,
+    RestaurantReviewsModule,
+
+    // FOOD CATEGORIES
+    FoodCategoriesModule,
+
+    // CLIENT ANALYTICS
+    ClientMetricsModule,
+    ClientReviewsModule,
+  ],
+  controllers: [AppController],
+  providers: [AppService],
+})
+export class AppModule {}
