@@ -21,7 +21,6 @@ export class RestaurantsService {
       update: {},
       create: {
         id: this.FINANCE_CONFIG_ID,
-        // остальные поля имеют default в Prisma schema
       },
       select: {
         id: true,
@@ -60,8 +59,6 @@ export class RestaurantsService {
 
   // ======================================================
   // ✅ FINANCE CONFIG (admin global tariff)
-  // GET /restaurants/finance-config
-  // PATCH /restaurants/finance-config
   // ======================================================
   async getFinanceConfig() {
     const cfg = await this.getOrCreateFinanceConfig();
@@ -135,7 +132,6 @@ export class RestaurantsService {
     }
 
     if (Object.keys(data).length === 0) {
-      // ничего не меняем, но возвращаем текущее состояние
       return this.getFinanceConfig();
     }
 
@@ -161,7 +157,7 @@ export class RestaurantsService {
   }
 
   // ======================================================
-  // COMMISSION DEFAULT (global)  ✅ GET /restaurants/commission/default
+  // COMMISSION DEFAULT (global)
   // ======================================================
   async getRestaurantCommissionDefault() {
     const cfg = await this.getOrCreateFinanceConfig();
@@ -171,8 +167,6 @@ export class RestaurantsService {
     };
   }
 
-  // (служебный метод, если вдруг надо менять дефолт через админку)
-  // на пустой БД НЕ 500, т.к. upsert
   async setRestaurantCommissionDefault(restaurantCommissionPctDefault?: number) {
     if (typeof restaurantCommissionPctDefault !== 'number') {
       throw new BadRequestException(
@@ -196,7 +190,7 @@ export class RestaurantsService {
   }
 
   // ======================================================
-  // ADMIN LIST (поиск + runtime статус + комиссия)
+  // ADMIN LIST
   // ======================================================
   async findAll(q?: string, status?: 'OPEN' | 'CLOSED') {
     const isNumber = q && !isNaN(Number(q));
@@ -232,10 +226,8 @@ export class RestaurantsService {
         ratingAvg: true,
         ratingCount: true,
         status: true,
-
         isInApp: true,
         restaurantCommissionPctOverride: true,
-
         isPinned: true,
         sortOrder: true,
         useRandom: true,
@@ -394,8 +386,7 @@ export class RestaurantsService {
   }
 
   // ======================================================
-  // COMMISSION OVERRIDE (per restaurant)
-  // ✅ PATCH /restaurants/:id/commission
+  // COMMISSION OVERRIDE
   // ======================================================
   async setRestaurantCommissionOverride(
     id: string,
@@ -460,7 +451,6 @@ export class RestaurantsService {
 
   // ======================================================
   // RESET OVERRIDE
-  // ✅ POST /restaurants/:id/commission/reset
   // ======================================================
   async resetRestaurantCommissionOverride(id: string) {
     return this.setRestaurantCommissionOverride(id, null);
@@ -487,37 +477,18 @@ export class RestaurantsService {
   }
 
   // ======================================================
-  // CLIENT LIST (только реально открытые + включенные в приложении)
+  // CLIENT LIST FOR HOME
+  // Только рестораны, отмеченные для главной
   // ======================================================
   async list(opts: { random: boolean }) {
-    const where = { status: 'OPEN' as const, isInApp: true as const };
+    const where = {
+      status: 'OPEN' as const,
+      isInApp: true as const,
+      isPinned: true as const,
+    };
 
     const pinned = await this.prisma.restaurant.findMany({
-      where: { ...where, isPinned: true },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
-      select: {
-        id: true,
-        number: true,
-        slug: true,
-        nameRu: true,
-        nameKk: true,
-        phone: true,
-        address: true,
-        workingHours: true,
-        coverImageUrl: true,
-        ratingAvg: true,
-        ratingCount: true,
-        status: true,
-        isInApp: true,
-        restaurantCommissionPctOverride: true,
-        isPinned: true,
-        sortOrder: true,
-        useRandom: true,
-      },
-    });
-
-    const others = await this.prisma.restaurant.findMany({
-      where: { ...where, isPinned: false },
+      where,
       orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
       select: {
         id: true,
@@ -545,12 +516,14 @@ export class RestaurantsService {
 
     const isOpenNow = (workingHours?: string | null) => {
       if (!workingHours) return false;
+
       const parts = workingHours.split('-').map((s) => s.trim());
       if (parts.length !== 2) return false;
 
       const [start, end] = parts;
       const [sh, sm] = start.split(':').map((x) => Number(x));
       const [eh, em] = end.split(':').map((x) => Number(x));
+
       if (
         !Number.isFinite(sh) ||
         !Number.isFinite(sm) ||
@@ -566,21 +539,94 @@ export class RestaurantsService {
       if (endMin >= startMin) {
         return currentMinutes >= startMin && currentMinutes <= endMin;
       }
+
       return currentMinutes >= startMin || currentMinutes <= endMin;
     };
 
     const pinnedOpen = pinned.filter(
-      (r) => r.status === 'OPEN' && r.isInApp === true && isOpenNow(r.workingHours),
-    );
-    const othersOpen = others.filter(
-      (r) => r.status === 'OPEN' && r.isInApp === true && isOpenNow(r.workingHours),
+      (r) => r.status === 'OPEN' && r.isInApp === true && r.isPinned === true && isOpenNow(r.workingHours),
     );
 
-    const finalOthers = opts.random ? this.shuffle(othersOpen) : othersOpen;
+    const finalPinned = opts.random ? this.shuffle(pinnedOpen) : pinnedOpen;
 
     return {
-      pinned: pinnedOpen,
-      items: [...pinnedOpen, ...finalOthers],
+      pinned: finalPinned,
+      items: finalPinned,
+    };
+  }
+
+  // ======================================================
+  // CLIENT LIST FOR RESTAURANTS SCREEN
+  // Все открытые рестораны приложения, независимо от isPinned
+  // ======================================================
+  async publicAll(opts: { random: boolean }) {
+    const restaurants = await this.prisma.restaurant.findMany({
+      where: {
+        status: 'OPEN',
+        isInApp: true,
+      },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        number: true,
+        slug: true,
+        nameRu: true,
+        nameKk: true,
+        phone: true,
+        address: true,
+        workingHours: true,
+        coverImageUrl: true,
+        ratingAvg: true,
+        ratingCount: true,
+        status: true,
+        isInApp: true,
+        restaurantCommissionPctOverride: true,
+        isPinned: true,
+        sortOrder: true,
+        useRandom: true,
+      },
+    });
+
+    const timeZone = process.env.APP_TIMEZONE || 'Asia/Almaty';
+    const currentMinutes = this.getCurrentMinutesInTimeZone(timeZone);
+
+    const isOpenNow = (workingHours?: string | null) => {
+      if (!workingHours) return false;
+
+      const parts = workingHours.split('-').map((s) => s.trim());
+      if (parts.length !== 2) return false;
+
+      const [start, end] = parts;
+      const [sh, sm] = start.split(':').map((x) => Number(x));
+      const [eh, em] = end.split(':').map((x) => Number(x));
+
+      if (
+        !Number.isFinite(sh) ||
+        !Number.isFinite(sm) ||
+        !Number.isFinite(eh) ||
+        !Number.isFinite(em)
+      ) {
+        return false;
+      }
+
+      const startMin = sh * 60 + sm;
+      const endMin = eh * 60 + em;
+
+      if (endMin >= startMin) {
+        return currentMinutes >= startMin && currentMinutes <= endMin;
+      }
+
+      return currentMinutes >= startMin || currentMinutes <= endMin;
+    };
+
+    const openNow = restaurants.filter(
+      (r) => r.status === 'OPEN' && r.isInApp === true && isOpenNow(r.workingHours),
+    );
+
+    const items = opts.random ? this.shuffle(openNow) : openNow;
+
+    return {
+      items,
     };
   }
 
@@ -632,10 +678,10 @@ export class RestaurantsService {
   }
 
   // ======================================================
-  // PRODUCTS
+  // PRODUCTS / MENU
   // ======================================================
   async products(restaurantId: string, opts: { includeUnavailable: boolean }) {
-    const exists = await this.prisma.restaurant.findUnique({
+    const restaurant = await this.prisma.restaurant.findUnique({
       where: { id: restaurantId },
       select: {
         id: true,
@@ -647,14 +693,32 @@ export class RestaurantsService {
       },
     });
 
-    if (!exists) throw new NotFoundException('Restaurant not found');
+    if (!restaurant) {
+      throw new NotFoundException('Restaurant not found');
+    }
+
+    const categories = await this.prisma.foodCategory.findMany({
+      where: { restaurantId },
+      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'asc' }],
+      select: {
+        id: true,
+        code: true,
+        titleRu: true,
+        titleKk: true,
+        sortOrder: true,
+        iconUrl: true,
+      },
+    });
 
     const products = await this.prisma.product.findMany({
       where: {
         restaurantId,
         ...(opts.includeUnavailable ? {} : { isAvailable: true }),
       },
-      orderBy: [{ createdAt: 'desc' }],
+      orderBy: [
+        { category: { sortOrder: 'asc' } },
+        { createdAt: 'desc' },
+      ],
       select: {
         id: true,
         titleRu: true,
@@ -662,6 +726,11 @@ export class RestaurantsService {
         price: true,
         imageUrl: true,
         isAvailable: true,
+        categoryId: true,
+        weight: true,
+        composition: true,
+        description: true,
+        isDrink: true,
         category: {
           select: {
             id: true,
@@ -672,12 +741,46 @@ export class RestaurantsService {
             iconUrl: true,
           },
         },
+        images: {
+          orderBy: [{ isMain: 'desc' }, { sortOrder: 'asc' }, { createdAt: 'asc' }],
+          select: {
+            id: true,
+            url: true,
+            isMain: true,
+            sortOrder: true,
+          },
+        },
       },
     });
 
+    const items = products.map((p) => {
+      const mainImage = p.images.find((img) => img.isMain);
+
+      return {
+        id: p.id,
+        titleRu: p.titleRu,
+        titleKk: p.titleKk,
+        price: p.price,
+        imageUrl: mainImage?.url || p.imageUrl || null,
+        isAvailable: p.isAvailable,
+        categoryId: p.categoryId ?? null,
+        categoryNameRu: p.category?.titleRu ?? null,
+        categoryNameKk: p.category?.titleKk ?? null,
+        categoryCode: p.category?.code ?? null,
+        categorySortOrder: p.category?.sortOrder ?? 0,
+        weight: p.weight ?? null,
+        composition: p.composition ?? null,
+        description: p.description ?? null,
+        isDrink: p.isDrink,
+        images: p.images,
+      };
+    });
+
     return {
-      restaurant: exists,
-      products,
+      restaurant,
+      categories,
+      items,
+      products: items,
     };
   }
 
@@ -721,5 +824,72 @@ export class RestaurantsService {
     const mm = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
 
     return hh * 60 + mm;
+  }
+
+  async setCoverImage(id: string, coverImageUrl: string) {
+    if (!coverImageUrl?.trim()) {
+      throw new BadRequestException('coverImageUrl is required');
+    }
+
+    const exists = await this.prisma.restaurant.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!exists) {
+      throw new NotFoundException('Restaurant not found');
+    }
+
+    return this.prisma.restaurant.update({
+      where: { id },
+      data: { coverImageUrl },
+      select: {
+        id: true,
+        number: true,
+        slug: true,
+        nameRu: true,
+        nameKk: true,
+        coverImageUrl: true,
+        updatedAt: true,
+      },
+    });
+  }
+
+  /**
+   * ⭐ Показать ресторан на главной
+   * Не влияет на раздел "Рестораны"
+   */
+  async setPinned(id: string, isPinned?: boolean, sortOrder?: number) {
+    if (typeof isPinned !== 'boolean') {
+      throw new BadRequestException('isPinned must be boolean');
+    }
+
+    const exists = await this.prisma.restaurant.findUnique({
+      where: { id },
+      select: { id: true },
+    });
+
+    if (!exists) {
+      throw new NotFoundException('Restaurant not found');
+    }
+
+    return this.prisma.restaurant.update({
+      where: { id },
+      data: {
+        isPinned,
+        ...(typeof sortOrder === 'number' ? { sortOrder } : {}),
+      },
+      select: {
+        id: true,
+        number: true,
+        slug: true,
+        nameRu: true,
+        nameKk: true,
+        coverImageUrl: true,
+        isPinned: true,
+        sortOrder: true,
+        updatedAt: true,
+      },
+    });
   }
 }

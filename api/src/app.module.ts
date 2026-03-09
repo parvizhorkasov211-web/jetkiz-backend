@@ -23,6 +23,7 @@ import { ClientMetricsModule } from './client-metrics/client-metrics.module';
 import { ClientReviewsModule } from './client-reviews/client-reviews.module';
 
 import { FoodCategoriesModule } from './food-categories/food-categories.module';
+import { HomeCmsModule } from './home-cms/home-cms.module';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
@@ -54,6 +55,9 @@ import { AppService } from './app.service';
 
     // FOOD CATEGORIES
     FoodCategoriesModule,
+
+    // HOME CMS
+    HomeCmsModule,
 
     // CLIENT ANALYTICS
     ClientMetricsModule,

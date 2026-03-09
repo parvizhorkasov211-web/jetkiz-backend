@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   Delete,
@@ -7,19 +8,47 @@ import {
   Patch,
   Post,
   Query,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
 import { RestaurantsService } from './restaurants.service';
 import { CreateRestaurantDto } from './dto/create-restaurant.dto';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { diskStorage } from 'multer';
+import { extname, join } from 'path';
+
+function restaurantCoverStorage() {
+  return diskStorage({
+    destination: join(process.cwd(), 'uploads', 'restaurants'),
+    filename: (_req, file, cb) => {
+      const safeExt = extname(file.originalname || '').toLowerCase() || '.jpg';
+      const unique = `${Date.now()}-${Math.round(Math.random() * 1e9)}${safeExt}`;
+      cb(null, unique);
+    },
+  });
+}
+
+function imageFileFilter(
+  _req: any,
+  file: Express.Multer.File,
+  cb: (error: Error | null, acceptFile: boolean) => void,
+) {
+  const mime = file.mimetype?.toLowerCase() || '';
+  if (
+    mime === 'image/jpeg' ||
+    mime === 'image/jpg' ||
+    mime === 'image/png' ||
+    mime === 'image/webp'
+  ) {
+    return cb(null, true);
+  }
+  cb(new BadRequestException('Only jpg, jpeg, png, webp are allowed') as any, false);
+}
 
 @Controller('restaurants')
 export class RestaurantsController {
   constructor(private readonly restaurants: RestaurantsService) {}
 
-  // ======================================================
-  // ✅ FINANCE CONFIG (admin)
-  // GET /restaurants/finance/config
-  // PATCH /restaurants/finance/config
-  // ======================================================
   @Get('finance/config')
   getFinanceConfig() {
     return this.restaurants.getFinanceConfig();
@@ -41,11 +70,6 @@ export class RestaurantsController {
     return this.restaurants.updateFinanceConfig(body);
   }
 
-  // ======================================================
-  // COMMISSION DEFAULT (global)
-  // ✅ GET /restaurants/commission/default
-  // ✅ PATCH /restaurants/commission/default
-  // ======================================================
   @Get('commission/default')
   getRestaurantCommissionDefault() {
     return this.restaurants.getRestaurantCommissionDefault();
@@ -60,9 +84,6 @@ export class RestaurantsController {
     );
   }
 
-  // ======================================================
-  // ADMIN LIST
-  // ======================================================
   @Get()
   findAll(
     @Query('q') q?: string,
@@ -71,9 +92,9 @@ export class RestaurantsController {
     return this.restaurants.findAll(q, status);
   }
 
-  // ======================================================
-  // CLIENT LIST
-  // ======================================================
+  /**
+   * Главная страница: только рестораны, отмеченные для показа на главной
+   */
   @Get('public/list')
   list(@Query('random') random?: string) {
     return this.restaurants.list({
@@ -81,25 +102,72 @@ export class RestaurantsController {
     });
   }
 
-  // ======================================================
-  // GET ONE
-  // ======================================================
+  /**
+   * Полный список для раздела "Рестораны":
+   * все открытые рестораны, доступные в приложении
+   */
+  @Get('public/all')
+  publicAll(@Query('random') random?: string) {
+    return this.restaurants.publicAll({
+      random: random === '1' || random === 'true',
+    });
+  }
+
+  @Get(':id/menu')
+  menu(
+    @Param('id') restaurantId: string,
+    @Query('includeUnavailable') includeUnavailable?: string,
+  ) {
+    return this.restaurants.products(restaurantId, {
+      includeUnavailable:
+        includeUnavailable === '1' || includeUnavailable === 'true',
+    });
+  }
+
+  @Get(':id/products')
+  products(
+    @Param('id') restaurantId: string,
+    @Query('includeUnavailable') includeUnavailable?: string,
+  ) {
+    return this.restaurants.products(restaurantId, {
+      includeUnavailable:
+        includeUnavailable === '1' || includeUnavailable === 'true',
+    });
+  }
+
   @Get(':id')
   getOne(@Param('id') id: string) {
     return this.restaurants.getOne(id);
   }
 
-  // ======================================================
-  // CREATE
-  // ======================================================
   @Post()
   create(@Body() dto: CreateRestaurantDto) {
     return this.restaurants.create(dto);
   }
 
-  // ======================================================
-  // IN-APP TOGGLE
-  // ======================================================
+  @Post(':id/cover')
+  @UseInterceptors(
+    FileInterceptor('file', {
+      storage: restaurantCoverStorage(),
+      fileFilter: imageFileFilter,
+      limits: {
+        files: 1,
+        fileSize: 10 * 1024 * 1024,
+      },
+    }),
+  )
+  async uploadCover(
+    @Param('id') id: string,
+    @UploadedFile() file?: Express.Multer.File,
+  ) {
+    if (!file) {
+      throw new BadRequestException('file is required');
+    }
+
+    const coverImageUrl = `/uploads/restaurants/${file.filename}`;
+    return this.restaurants.setCoverImage(id, coverImageUrl);
+  }
+
   @Patch(':id/in-app')
   setInApp(
     @Param('id') id: string,
@@ -108,9 +176,22 @@ export class RestaurantsController {
     return this.restaurants.setInApp(id, body?.isInApp);
   }
 
-  // ======================================================
-  // COMMISSION OVERRIDE ✅ PATCH /restaurants/:id/commission
-  // ======================================================
+  /**
+   * Показывать ресторан на главной
+   * Не влияет на раздел "Рестораны"
+   */
+  @Patch(':id/pinned')
+  setPinned(
+    @Param('id') id: string,
+    @Body() body: { isPinned?: boolean; sortOrder?: number },
+  ) {
+    return this.restaurants.setPinned(
+      id,
+      body?.isPinned,
+      body?.sortOrder,
+    );
+  }
+
   @Patch(':id/commission')
   setRestaurantCommissionOverride(
     @Param('id') id: string,
@@ -122,33 +203,13 @@ export class RestaurantsController {
     );
   }
 
-  // ======================================================
-  // RESET ✅ POST /restaurants/:id/commission/reset
-  // ======================================================
   @Post(':id/commission/reset')
   resetRestaurantCommissionOverride(@Param('id') id: string) {
     return this.restaurants.resetRestaurantCommissionOverride(id);
   }
 
-  // ======================================================
-  // DELETE
-  // ======================================================
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.restaurants.remove(id);
-  }
-
-  // ======================================================
-  // PRODUCTS
-  // ======================================================
-  @Get(':id/products')
-  products(
-    @Param('id') restaurantId: string,
-    @Query('includeUnavailable') includeUnavailable?: string,
-  ) {
-    return this.restaurants.products(restaurantId, {
-      includeUnavailable:
-        includeUnavailable === '1' || includeUnavailable === 'true',
-    });
   }
 }

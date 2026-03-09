@@ -532,8 +532,12 @@ export class OrdersService {
           phone: dto.phone,
           comment: dto.comment ?? null,
           leaveAtDoor: dto.leaveAtDoor,
-          paymentMethod: 'CASH',
-          paymentStatus: 'PENDING',
+
+          // Наличные заказы отключены:
+          // все новые заказы считаем карточными и оплаченными
+          paymentMethod: 'CARD',
+          paymentStatus: 'PAID',
+
           items: { create: itemsCreate },
 
           createdAt,

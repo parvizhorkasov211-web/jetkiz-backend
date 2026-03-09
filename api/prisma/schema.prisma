@@ -706,3 +706,39 @@ model CourierLedgerEntry {
   @@index([orderId])
   @@index([type])
 }
+
+model HomeCmsConfig {
+  id String @id
+
+  promoTitleRu String?
+  promoTitleKk String?
+
+  promoImageUrl String?
+  promoIsActive Boolean @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  categories HomeCmsCategory[]
+}
+
+model HomeCmsCategory {
+  id String @id @default(uuid())
+
+  configId String
+
+  titleRu String
+  titleKk String
+
+  imageUrl String?
+  sortOrder Int @default(0)
+  isActive Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  config HomeCmsConfig @relation(fields: [configId], references: [id], onDelete: Cascade)
+
+  @@index([configId, sortOrder])
+  @@index([isActive])
+}
